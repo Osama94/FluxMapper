@@ -5,6 +5,7 @@
     <Project Path="src/FluxMapper.SourceGenerator/FluxMapper.SourceGenerator.csproj" />
     <Project Path="src/FluxMapper.Analyzers/FluxMapper.Analyzers.csproj" />
     <Project Path="src/FluxMapper.Extensions.DependencyInjection/FluxMapper.Extensions.DependencyInjection.csproj" />
+    <Project Path="src/FluxMapper/FluxMapper.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FluxMapper.Tests/FluxMapper.Tests.csproj" />

@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Umbrella package with no code of its own: installing "FluxMapper" pulls in every real package
+    (Core, SourceGenerator, Analyzers, Extensions.DependencyInjection; Abstractions comes along
+    transitively through Core) in one step, for anyone who wants the whole feature set rather than
+    picking packages individually.
+
+    FluxMapper.SourceGenerator and FluxMapper.Analyzers are packaged as development dependencies
+    (DevelopmentDependency=true in their own csproj) specifically so that referencing FluxMapper.Core
+    directly does NOT force the analyzer/generator onto unrelated consumers. That same flag means a
+    plain reference to them here would normally be stripped from this package's own dependency list
+    when packed. PrivateAssets="none" below overrides that suppression so the dependency edge is kept,
+    which is what makes them actually reach whoever installs this package.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\FluxMapper.Core\FluxMapper.Core.csproj" />
+    <ProjectReference Include="..\FluxMapper.Extensions.DependencyInjection\FluxMapper.Extensions.DependencyInjection.csproj" />
+    <ProjectReference Include="..\FluxMapper.SourceGenerator\FluxMapper.SourceGenerator.csproj" PrivateAssets="none" />
+    <ProjectReference Include="..\FluxMapper.Analyzers\FluxMapper.Analyzers.csproj" PrivateAssets="none" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <PackageId>FluxMapper</PackageId>
+    <Description>Umbrella package for FluxMapper: installs FluxMapper.Core, FluxMapper.SourceGenerator, FluxMapper.Analyzers, and FluxMapper.Extensions.DependencyInjection together, for anyone who wants every feature with a single package reference. Install the individual packages instead if you want to pick and choose.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

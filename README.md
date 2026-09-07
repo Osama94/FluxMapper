@@ -85,6 +85,7 @@ var dto = OrderDto.MapFrom(order); // emitted at compile time, no IMapper involv
 
 | Package | Depends on | Notes |
 |---|---|---|
+| `FluxMapper` | Everything below | Umbrella package, no code of its own — installs every FluxMapper feature in one step. |
 | `FluxMapper.Abstractions` | BCL only | Contracts (`IMapper`, `IValueResolver<>`, `IProjectionValueResolver<>`, `[MapFrom]`). Fully AOT/trim compatible. |
 | `FluxMapper.Core` | `FluxMapper.Abstractions` | Fluent configuration, compiled-expression execution tier, projection engine. |
 | `FluxMapper.SourceGenerator` | Roslyn (build-time only) | `[MapFrom]` incremental generator. |
@@ -92,6 +93,14 @@ var dto = OrderDto.MapFrom(order); // emitted at compile time, no IMapper involv
 | `FluxMapper.Extensions.DependencyInjection` | `FluxMapper.Core` | `AddFluxMapper` for `IServiceCollection`. |
 
 ## Installation
+
+Want everything with one package:
+
+```
+dotnet add package FluxMapper
+```
+
+Or pick only what you need:
 
 ```
 dotnet add package FluxMapper.Core
