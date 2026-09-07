@@ -92,8 +92,21 @@ public sealed class MappingPlanBuilder(ITypeMapConfigurationProvider configProvi
             }
 
             var diagnostics = new List<PlanDiagnostic>();
-            var (ctorPlan, ctorDiagnostic) = ConstructorSelector.Select(destinationType, sourceType, naming);
-            if (ctorDiagnostic is not null) diagnostics.Add(ctorDiagnostic);
+
+            // A ConstructUsing expression on the map's configuration replaces normal constructor selection
+            // entirely -- the destination is built by evaluating that expression at runtime, so there are no
+            // constructor-argument member bindings to discover here.
+            ConstructorPlan? ctorPlan;
+            if (config?.CustomConstructor is { } customConstructor)
+            {
+                ctorPlan = new ConstructorPlan(null, [], customConstructor);
+            }
+            else
+            {
+                var (selectedCtorPlan, ctorDiagnostic) = ConstructorSelector.Select(destinationType, sourceType, naming);
+                ctorPlan = selectedCtorPlan;
+                if (ctorDiagnostic is not null) diagnostics.Add(ctorDiagnostic);
+            }
 
             var boundMemberNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var memberPlans = new List<MemberPlan>();
@@ -111,6 +124,21 @@ public sealed class MappingPlanBuilder(ITypeMapConfigurationProvider configProvi
                         matchingProperty, binding.Source, MemberStrategy.ConstructorArgument,
                         [new CandidateSource(binding.Source, CandidateSource.ConstructorMatch, matchingProperty.Name)],
                         config, stack, depth, diagnostics));
+                }
+            }
+
+            if (config is not null && config.PathMaps.Count > 0)
+            {
+                foreach (var group in config.PathMaps.GroupBy(pm => pm.Path[0].Name))
+                {
+                    var rootMember = group.First().Path[0];
+                    boundMemberNames.Add(rootMember.Name);
+
+                    var entries = group.Select(pm => (Path: (IReadOnlyList<MemberInfo>)pm.Path.Skip(1).ToList(), pm.Source)).ToList();
+                    var rootPathPlan = BuildPathPlan(MemberValueTypeHelper.GetMemberType(rootMember), rootMember.Name, entries, diagnostics);
+
+                    memberPlans.Add(new MemberPlan(rootMember, new ResolvedSource.Unresolved(),
+                        MemberStrategy.PathMapping, NullPolicy.Ignore, [], PathPlan: rootPathPlan));
                 }
             }
 
@@ -152,7 +180,9 @@ public sealed class MappingPlanBuilder(ITypeMapConfigurationProvider configProvi
 
             return new MappingPlan(sourceType, destinationType, kind, ctorPlan ?? new ConstructorPlan(null, []),
                 memberPlans, referencePlan, ExecutionEligibility.ForCompiledExpression(), diagnostics,
-                PolymorphismPlan: polymorphismPlan);
+                PolymorphismPlan: polymorphismPlan,
+                BeforeMap: config?.BeforeMap,
+                AfterMap: config?.AfterMap);
         }
         finally
         {
@@ -400,5 +430,62 @@ public sealed class MappingPlanBuilder(ITypeMapConfigurationProvider configProvi
         }
 
         return explicitPolicy ?? NullPolicy.Map;
+    }
+
+    /// <summary>
+    /// Builds one <see cref="PathPlan"/> node (and, recursively, every nested branch) purely from
+    /// explicit <c>ForPath</c> registrations -- there is no fallback to convention-based member
+    /// discovery here, because ForPath exists precisely for the case where a matching source member
+    /// does not exist for an intermediate destination segment (see the type's own doc comment).
+    /// Every subtree this produces is always freshly constructed at execution time (never merged
+    /// into an existing instance, even during update-in-place), so a destination type with no public
+    /// parameterless constructor can never be satisfied and is reported as MAP0004 here rather than
+    /// deferred to a runtime failure.
+    /// </summary>
+    private static PathPlan BuildPathPlan(
+        Type destinationType,
+        string pathLabel,
+        List<(IReadOnlyList<MemberInfo> Path, ResolvedSource Source)> entries,
+        List<PlanDiagnostic> diagnostics)
+    {
+        if (destinationType.GetConstructor(Type.EmptyTypes) is null)
+        {
+            diagnostics.Add(PlanDiagnostic.Create(
+                code: "MAP0004",
+                severity: DiagnosticSeverity.Error,
+                sourcePath: "",
+                destinationPath: pathLabel,
+                reason: $"ForPath targets '{pathLabel}' ({destinationType.Name}), which has no public " +
+                        "parameterless constructor -- ForPath always freshly constructs the destination " +
+                        "subtree it touches.",
+                suggestedFixes: [$"Give {destinationType.Name} a public parameterless constructor, or map this member without ForPath."]));
+        }
+
+        var leaves = new List<PathLeaf>();
+        var branches = new List<PathBranch>();
+
+        foreach (var group in entries.GroupBy(e => e.Path.Count == 1 ? null : e.Path[0].Name))
+        {
+            if (group.Key is null)
+            {
+                foreach (var (path, source) in group)
+                {
+                    var leafMember = path[0];
+                    leaves.Add(new PathLeaf(leafMember, source, MemberValueTypeHelper.GetMemberType(leafMember)));
+                }
+            }
+            else
+            {
+                var branchMember = group.First().Path[0];
+                var childEntries = group
+                    .Select(e => (Path: (IReadOnlyList<MemberInfo>)e.Path.Skip(1).ToList(), e.Source))
+                    .ToList();
+                var childPlan = BuildPathPlan(
+                    MemberValueTypeHelper.GetMemberType(branchMember), $"{pathLabel}.{branchMember.Name}", childEntries, diagnostics);
+                branches.Add(new PathBranch(branchMember, childPlan));
+            }
+        }
+
+        return new PathPlan(destinationType, leaves, branches);
     }
 }

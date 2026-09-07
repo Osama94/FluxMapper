@@ -108,13 +108,25 @@ public static class CompiledMapperFactory
                 Expression.Convert(typedDestination, typeof(object))));
         }
 
+        if (plan.BeforeMap is not null)
+        {
+            body.Add(Expression.Invoke(Expression.Constant(plan.BeforeMap),
+                Expression.Convert(typedSource, typeof(object)), Expression.Convert(typedDestination, typeof(object))));
+        }
+
         var assignments = plan.MemberPlans
             .Where(m => m.Strategy is not (MemberStrategy.Ignored or MemberStrategy.ConstructorArgument))
-            .Where(m => m.Source is not ResolvedSource.Unresolved)
+            .Where(m => m.Source is not ResolvedSource.Unresolved || m.Strategy is MemberStrategy.PathMapping)
             .Select(member => BuildUpdateAssignment(member, typedSource, typedDestination, refContext, services))
             .ToList();
 
         body.AddRange(assignments);
+
+        if (plan.AfterMap is not null)
+        {
+            body.Add(Expression.Invoke(Expression.Constant(plan.AfterMap),
+                Expression.Convert(typedSource, typeof(object)), Expression.Convert(typedDestination, typeof(object))));
+        }
 
         var block = Expression.Block(blockVars, body);
         return Expression.Lambda<Action<object?, object>>(block, sourceParam, destinationParam).Compile();
@@ -131,6 +143,9 @@ public static class CompiledMapperFactory
 
     private static readonly PropertyInfo ResolutionContextServicesProperty =
         typeof(ResolutionContext).GetProperty(nameof(ResolutionContext.Services))!;
+
+    private static readonly PropertyInfo ResolutionContextCurrentProperty =
+        typeof(ResolutionContext).GetProperty(nameof(ResolutionContext.Current))!;
 
     /// <summary>
     /// The reference-preservation feature: when this plan opted into
@@ -214,6 +229,16 @@ public static class CompiledMapperFactory
     {
         var ctorPlan = plan.ConstructorPlan;
 
+        // A ConstructUsing expression and/or BeforeMap/AfterMap hooks need statement-by-statement control
+        // over construction (invoke the custom expression, or splice a delegate call between construction
+        // and member assignment) that a single MemberInit expression cannot express -- route the whole
+        // plan through the block-based builder below instead. The common case (none of the three) never
+        // pays for this: it falls straight through to the existing MemberInit path.
+        if (ctorPlan.UsesCustomConstruction || plan.BeforeMap is not null || plan.AfterMap is not null)
+        {
+            return BuildConstructExpressionWithHooks(plan, typedSourceExpr, refContext, services);
+        }
+
         // Only a parameterless-constructible destination can be registered in
         // the identity map *before* its members are assigned, which is what makes true cycles (A -> B -> A)
         // safe rather than just stack-overflowing. A destination requiring constructor arguments cannot be
@@ -227,35 +252,17 @@ public static class CompiledMapperFactory
             return BuildConstructExpressionWithEarlyRegistration(plan, typedSourceExpr, refContext, services);
         }
 
-        NewExpression newExpr;
-
-        if (ctorPlan.Constructor is not null && ctorPlan.ParameterBindings.Count > 0)
-        {
-            var args = ctorPlan.ParameterBindings.Select(binding =>
-            {
-                var matchingMember = plan.MemberPlans.FirstOrDefault(m =>
-                    m.Strategy == MemberStrategy.ConstructorArgument &&
-                    string.Equals(m.DestinationMember.Name, binding.Parameter.Name, StringComparison.OrdinalIgnoreCase));
-
-                var valueExpr = matchingMember is not null
-                    ? BuildMemberValueExpression(matchingMember, typedSourceExpr, refContext, services)
-                    : BuildScalarValueExpression(null, binding.Source, typedSourceExpr, binding.Parameter.ParameterType, services);
-
-                return (Expression)Expression.Convert(valueExpr, binding.Parameter.ParameterType);
-            }).ToList();
-
-            newExpr = Expression.New(ctorPlan.Constructor, args);
-        }
-        else
-        {
-            newExpr = Expression.New(plan.DestinationType);
-        }
+        var newExpr = BuildNewExpression(plan, ctorPlan, typedSourceExpr, refContext, services);
 
         var bindings = new List<MemberBinding>();
         foreach (var member in plan.MemberPlans)
         {
             if (member.Strategy is MemberStrategy.ConstructorArgument or MemberStrategy.Ignored) continue;
-            if (member.Source is ResolvedSource.Unresolved) continue;
+            // PathMapping members deliberately carry an Unresolved Source sentinel (their
+            // real value comes from member.PathPlan instead) -- skip the general Unresolved
+            // guard for them specifically, or a ForPath-targeted member would silently never
+            // get assigned at all.
+            if (member.Source is ResolvedSource.Unresolved && member.Strategy is not MemberStrategy.PathMapping) continue;
 
             var destinationMemberType = MemberValueTypeHelper.GetMemberType(member.DestinationMember);
             var valueExpr = Expression.Convert(BuildMemberValueExpression(member, typedSourceExpr, refContext, services), destinationMemberType);
@@ -288,7 +295,11 @@ public static class CompiledMapperFactory
         foreach (var member in plan.MemberPlans)
         {
             if (member.Strategy is MemberStrategy.ConstructorArgument or MemberStrategy.Ignored) continue;
-            if (member.Source is ResolvedSource.Unresolved) continue;
+            // PathMapping members deliberately carry an Unresolved Source sentinel (their
+            // real value comes from member.PathPlan instead) -- skip the general Unresolved
+            // guard for them specifically, or a ForPath-targeted member would silently never
+            // get assigned at all.
+            if (member.Source is ResolvedSource.Unresolved && member.Strategy is not MemberStrategy.PathMapping) continue;
 
             var destinationMemberType = MemberValueTypeHelper.GetMemberType(member.DestinationMember);
             var valueExpr = Expression.Convert(BuildMemberValueExpression(member, typedSourceExpr, refContext, services), destinationMemberType);
@@ -315,6 +326,116 @@ public static class CompiledMapperFactory
         return Expression.Block(plan.DestinationType, [destVar], statements);
     }
 
+    /// <summary>
+    /// Builds the <c>new Foo(...)</c> (or parameterless <c>new Foo()</c>) node for a plan's ordinary,
+    /// non-custom construction path. Shared by <see cref="BuildConstructExpression"/>'s fast MemberInit
+    /// path and <see cref="BuildConstructExpressionWithHooks"/>'s block-based path so a parameterized
+    /// constructor behaves identically whether or not the plan also carries BeforeMap/AfterMap hooks.
+    /// Never called when <see cref="ConstructorPlan.UsesCustomConstruction"/> is true -- that case is
+    /// handled by evaluating <see cref="ConstructorPlan.CustomExpression"/> directly instead.
+    /// </summary>
+    private static NewExpression BuildNewExpression(MappingPlan plan, ConstructorPlan ctorPlan, Expression typedSourceExpr, Expression? refContext, IServiceProvider? services)
+    {
+        if (ctorPlan.Constructor is null || ctorPlan.ParameterBindings.Count == 0)
+        {
+            return Expression.New(plan.DestinationType);
+        }
+
+        var args = ctorPlan.ParameterBindings.Select(binding =>
+        {
+            var matchingMember = plan.MemberPlans.FirstOrDefault(m =>
+                m.Strategy == MemberStrategy.ConstructorArgument &&
+                string.Equals(m.DestinationMember.Name, binding.Parameter.Name, StringComparison.OrdinalIgnoreCase));
+
+            var valueExpr = matchingMember is not null
+                ? BuildMemberValueExpression(matchingMember, typedSourceExpr, refContext, services)
+                : BuildScalarValueExpression(null, binding.Source, typedSourceExpr, binding.Parameter.ParameterType, services);
+
+            return (Expression)Expression.Convert(valueExpr, binding.Parameter.ParameterType);
+        }).ToList();
+
+        return Expression.New(ctorPlan.Constructor, args);
+    }
+
+    /// <summary>
+    /// The block-based construction path used whenever a plan has a <c>ConstructUsing</c> expression
+    /// and/or BeforeMap/AfterMap hooks -- none of which fit inside a single MemberInit expression the way
+    /// <see cref="BuildConstructExpression"/>'s fast path does. Statement order mirrors AutoMapper:
+    /// construct, run BeforeMap against the freshly-constructed (not yet populated) instance, assign every
+    /// member, then run AfterMap against the fully-populated instance. Early reference-map registration
+    /// (see <see cref="BuildConstructExpressionWithEarlyRegistration"/>) still happens immediately after
+    /// construction, before BeforeMap runs, under the exact same "parameterless-constructible" gate as the
+    /// fast path -- a plan using ConstructUsing always satisfies that gate too, since
+    /// <see cref="Building.MappingPlanBuilder"/> never populates <see cref="ConstructorPlan.ParameterBindings"/> for
+    /// a custom-constructed plan.
+    /// </summary>
+    private static Expression BuildConstructExpressionWithHooks(MappingPlan plan, Expression typedSourceExpr, Expression? refContext, IServiceProvider? services)
+    {
+        var ctorPlan = plan.ConstructorPlan;
+        var destVar = Expression.Variable(plan.DestinationType, "dst");
+
+        Expression constructExpr = ctorPlan.UsesCustomConstruction
+            ? Expression.Invoke(ctorPlan.CustomExpression!, typedSourceExpr)
+            : BuildNewExpression(plan, ctorPlan, typedSourceExpr, refContext, services);
+
+        var statements = new List<Expression>
+        {
+            Expression.Assign(destVar, Expression.Convert(constructExpr, plan.DestinationType)),
+        };
+
+        if (refContext is not null && !typedSourceExpr.Type.IsValueType
+            && (ctorPlan.Constructor is null || ctorPlan.ParameterBindings.Count == 0))
+        {
+            statements.Add(Expression.Call(refContext, DictionaryItemSetter,
+                Expression.Convert(typedSourceExpr, typeof(object)), Expression.Convert(destVar, typeof(object))));
+        }
+
+        if (plan.BeforeMap is not null)
+        {
+            statements.Add(Expression.Invoke(Expression.Constant(plan.BeforeMap),
+                Expression.Convert(typedSourceExpr, typeof(object)), Expression.Convert(destVar, typeof(object))));
+        }
+
+        foreach (var member in plan.MemberPlans)
+        {
+            if (member.Strategy is MemberStrategy.ConstructorArgument or MemberStrategy.Ignored) continue;
+            // PathMapping members deliberately carry an Unresolved Source sentinel (their
+            // real value comes from member.PathPlan instead) -- skip the general Unresolved
+            // guard for them specifically, or a ForPath-targeted member would silently never
+            // get assigned at all.
+            if (member.Source is ResolvedSource.Unresolved && member.Strategy is not MemberStrategy.PathMapping) continue;
+
+            var destinationMemberType = MemberValueTypeHelper.GetMemberType(member.DestinationMember);
+            var valueExpr = Expression.Convert(BuildMemberValueExpression(member, typedSourceExpr, refContext, services), destinationMemberType);
+
+            Expression assign = Expression.Assign(
+                member.DestinationMember switch
+                {
+                    PropertyInfo p => Expression.Property(destVar, p),
+                    FieldInfo f => Expression.Field(destVar, f),
+                    _ => throw new NotSupportedException(),
+                },
+                valueExpr);
+
+            if (member.Condition is not null)
+            {
+                var conditionCall = Expression.Invoke(Expression.Constant(member.Condition), Expression.Convert(typedSourceExpr, typeof(object)));
+                assign = Expression.IfThen(conditionCall, assign);
+            }
+
+            statements.Add(assign);
+        }
+
+        if (plan.AfterMap is not null)
+        {
+            statements.Add(Expression.Invoke(Expression.Constant(plan.AfterMap),
+                Expression.Convert(typedSourceExpr, typeof(object)), Expression.Convert(destVar, typeof(object))));
+        }
+
+        statements.Add(destVar);
+        return Expression.Block(plan.DestinationType, [destVar], statements);
+    }
+
     private static Expression BuildMemberValueExpression(MemberPlan member, Expression sourceRoot, Expression? refContext, IServiceProvider? services)
     {
         var destinationType = MemberValueTypeHelper.GetMemberType(member.DestinationMember);
@@ -324,8 +445,58 @@ public static class CompiledMapperFactory
             MemberStrategy.NestedMapping => BuildNestedExpression(member.NestedPlan!, GetRawSourceExpression(member.Source, sourceRoot), destinationType, refContext, services),
             MemberStrategy.CollectionMapping => BuildCollectionExpression(member.CollectionPlan!, GetRawSourceExpression(member.Source, sourceRoot), destinationType, refContext, services),
             MemberStrategy.DictionaryMapping => BuildDictionaryExpression(member.DictionaryPlan!, GetRawSourceExpression(member.Source, sourceRoot), destinationType, refContext, services),
+            MemberStrategy.PathMapping => BuildPathPlanExpression(member.PathPlan!, sourceRoot, refContext, services),
             _ => BuildScalarValueExpression(member, member.Source, sourceRoot, destinationType, services),
         };
+    }
+
+    /// <summary>
+    /// Materializes one <see cref="Ir.PathPlan"/> subtree as a single composite expression: construct a
+    /// fresh instance of <see cref="Ir.PathPlan.DestinationType"/> (see that type's own doc comment for
+    /// why this is always a fresh construction, never a merge into an existing instance -- even during
+    /// update-in-place), assign every leaf value and recursively-built branch value onto it, then yield
+    /// the constructed instance as one bindable value -- the same "build one Expression.Block, return one
+    /// value" shape already used by <see cref="BuildNestedExpression"/>, <see cref="BuildCollectionExpression"/>,
+    /// and <see cref="BuildDictionaryExpression"/>. Every <see cref="Ir.PathLeaf.Source"/> is resolved
+    /// against <paramref name="sourceRoot"/> -- the whole mapped source object, never some narrower object
+    /// reached by walking the destination path -- because a <c>ForPath</c> registration's source expression
+    /// is always written in terms of the original source type, not an intermediate destination segment's
+    /// own (often unrelated) source counterpart.
+    /// </summary>
+    private static Expression BuildPathPlanExpression(PathPlan plan, Expression sourceRoot, Expression? refContext, IServiceProvider? services)
+    {
+        var instanceVar = Expression.Variable(plan.DestinationType, "pathTarget");
+        var statements = new List<Expression>
+        {
+            Expression.Assign(instanceVar, Expression.New(plan.DestinationType)),
+        };
+
+        foreach (var leaf in plan.Leaves)
+        {
+            var leafValue = BuildScalarValueExpression(null, leaf.Source, sourceRoot, leaf.MemberType, services);
+            var target = leaf.Member switch
+            {
+                PropertyInfo p => (Expression)Expression.Property(instanceVar, p),
+                FieldInfo f => Expression.Field(instanceVar, f),
+                _ => throw new NotSupportedException(),
+            };
+            statements.Add(Expression.Assign(target, Expression.Convert(leafValue, MemberValueTypeHelper.GetMemberType(leaf.Member))));
+        }
+
+        foreach (var branch in plan.Branches)
+        {
+            var branchValue = BuildPathPlanExpression(branch.Plan, sourceRoot, refContext, services);
+            var target = branch.Member switch
+            {
+                PropertyInfo p => (Expression)Expression.Property(instanceVar, p),
+                FieldInfo f => Expression.Field(instanceVar, f),
+                _ => throw new NotSupportedException(),
+            };
+            statements.Add(Expression.Assign(target, branchValue));
+        }
+
+        statements.Add(instanceVar);
+        return Expression.Block(plan.DestinationType, [instanceVar], statements);
     }
 
     private static Expression GetRawSourceExpression(ResolvedSource source, Expression sourceRoot) => source switch
@@ -544,6 +715,9 @@ public static class CompiledMapperFactory
             case ResolvedSource.ValueResolver vr:
                 return BuildResolverCall(vr, sourceRoot, targetType, services);
 
+            case ResolvedSource.ContextualResolver cr:
+                return BuildContextualResolverCall(cr, sourceRoot, targetType, services);
+
             case ResolvedSource.ValueConverter vc:
                 return BuildConverterCall(vc, sourceRoot, targetType, services);
 
@@ -611,6 +785,29 @@ public static class CompiledMapperFactory
         var lambda = Projection.ProjectionResolverHelper.GetResolverExpression(resolver.ResolverType);
         var inlined = ReplaceParameter(lambda, sourceRoot);
         return inlined.Type == targetType ? inlined : Expression.Convert(inlined, targetType);
+    }
+
+    /// <summary>
+    /// Invokes an inline, boxed <c>Func&lt;object?,object?,object?,ResolutionContext,object?&gt;</c>
+    /// resolver (see <see cref="ResolvedSource.ContextualResolver"/>) against the source object, a
+    /// default destination value, and a default "current value" -- FluxMapper does not yet thread the
+    /// real in-progress destination instance to this call site, matching <see cref="BuildResolverCall"/>'s
+    /// same, documented limitation for <c>IValueResolver&lt;&gt;</c> -- and the per-call
+    /// <see cref="ResolutionContext"/> built by <see cref="BuildResolutionContextExpression"/>, which is
+    /// where this feature earns its keep: reading <see cref="ResolutionContext.Items"/> populated via
+    /// <see cref="IMappingOperationOptions{TSource,TDestination}.Items"/> lets a conditional expression see
+    /// per-call state a compile-time <see cref="Expression"/> cannot.
+    /// </summary>
+    private static Expression BuildContextualResolverCall(ResolvedSource.ContextualResolver resolver, Expression sourceRoot, Type targetType, IServiceProvider? services)
+    {
+        var call = Expression.Invoke(
+            Expression.Constant(resolver.Resolver),
+            Expression.Convert(sourceRoot, typeof(object)),
+            Expression.Default(typeof(object)),
+            Expression.Default(typeof(object)),
+            BuildResolutionContextExpression(services));
+
+        return Expression.Convert(call, targetType);
     }
 
     /// <summary>
@@ -710,16 +907,24 @@ public static class CompiledMapperFactory
     }
 
     /// <summary>
-    /// Builds <c>new ResolutionContext { Services = services }</c> as an expression — still evaluated
-    /// fresh on every single invocation of the compiled delegate (never hoisted to a shared constant),
-    /// which is what keeps <see cref="ResolutionContext"/> free of the cross-call shared mutable state
-    /// its own doc comment rules out; only the closed-over <paramref name="services"/> reference itself
-    /// is a compile-time constant.
+    /// Builds <c>ResolutionContext.Current ?? new ResolutionContext { Services = services }</c> as an
+    /// expression — evaluated fresh on every single invocation of the compiled delegate (never hoisted to
+    /// a shared constant). <see cref="ResolutionContext.Current"/> is only non-null when the caller
+    /// supplied per-call options with at least one <see cref="ResolutionContext.Items"/> entry (see
+    /// FluxMapper.Core's <c>Mapper</c>), in which case every resolver/contextual-<c>MapFrom</c> reached
+    /// from that one call shares that single context instead of each getting its own fresh, empty one —
+    /// this is how a per-call <c>opt.Items["key"] = value</c> reaches a resolver anywhere in the object
+    /// graph without threading an extra parameter through every builder method in this class. The plain
+    /// (no ambient context) case is unchanged from before this existed: a fresh, empty context per call
+    /// site, never hoisted, so nothing here adds shared mutable state <see cref="ResolutionContext"/>'s own
+    /// doc comment rules out.
     /// </summary>
     private static Expression BuildResolutionContextExpression(IServiceProvider? services)
-        => Expression.MemberInit(
-            Expression.New(typeof(ResolutionContext)),
-            Expression.Bind(ResolutionContextServicesProperty, Expression.Constant(services, typeof(IServiceProvider))));
+        => Expression.Coalesce(
+            Expression.Property(null, ResolutionContextCurrentProperty),
+            Expression.MemberInit(
+                Expression.New(typeof(ResolutionContext)),
+                Expression.Bind(ResolutionContextServicesProperty, Expression.Constant(services, typeof(IServiceProvider)))));
 
     private sealed class ParameterReplacer(ParameterExpression from, Expression to) : ExpressionVisitor
     {

@@ -1,11 +1,12 @@
+using System.Reflection;
 using FluxMapper.Core.Conventions;
 
 namespace FluxMapper.Core.Configuration;
 
 /// <summary>
-/// The <c>cfg</c> parameter of <c>MapperConfiguration.Create(cfg => ...)</c>
-///. Also the <see cref="ITypeMapConfigurationProvider"/>
-/// the plan builder queries while recursing into nested/collection type pairs.
+/// The <c>cfg</c> parameter of <c>MapperConfiguration.Create(cfg => ...)</c>. Also the
+/// <see cref="ITypeMapConfigurationProvider"/> the plan builder queries while recursing into
+/// nested/collection type pairs.
 /// </summary>
 public sealed class MapperConfigurationExpression : ITypeMapConfigurationProvider
 {
@@ -37,4 +38,54 @@ public sealed class MapperConfigurationExpression : ITypeMapConfigurationProvide
     public IReadOnlyCollection<TypeMapConfiguration> AllRegisteredMaps => _configs.Values;
 
     internal IReadOnlyCollection<TypeMapConfiguration> RegisteredMaps => _configs.Values;
+
+    /// <summary>
+    /// Merges every <c>CreateMap</c> registered by <paramref name="profile"/> into this configuration, mirroring
+    /// AutoMapper's <c>cfg.AddProfile(new SomeProfile())</c>. A map already registered directly on this
+    /// configuration for the same source/destination pair is overwritten by the profile's version.
+    /// </summary>
+    public MapperConfigurationExpression AddProfile(Profile profile)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        foreach (var config in profile.RegisteredMaps)
+        {
+            _configs[(config.SourceType, config.DestinationType)] = config;
+        }
+        return this;
+    }
+
+    /// <summary>Instantiates <typeparamref name="TProfile"/> with its parameterless constructor and merges it in.</summary>
+    public MapperConfigurationExpression AddProfile<TProfile>() where TProfile : Profile, new()
+        => AddProfile(new TProfile());
+
+    /// <summary>
+    /// Scans <paramref name="assembly"/> for every non-abstract <see cref="Profile"/> with a parameterless
+    /// constructor and merges each one in, mirroring AutoMapper's
+    /// <c>services.AddAutoMapper(Assembly.GetExecutingAssembly())</c> convention.
+    /// </summary>
+    public MapperConfigurationExpression AddMaps(Assembly assembly) => AddMaps([assembly]);
+
+    /// <summary>Scans each of <paramref name="assemblies"/> for <see cref="Profile"/> types and merges them in.</summary>
+    public MapperConfigurationExpression AddMaps(params Assembly[] assemblies)
+    {
+        ArgumentNullException.ThrowIfNull(assemblies);
+        foreach (var assembly in assemblies)
+        {
+            foreach (var type in assembly.GetTypes())
+            {
+                if (type.IsAbstract || type.IsInterface || !typeof(Profile).IsAssignableFrom(type))
+                {
+                    continue;
+                }
+
+                if (type.GetConstructor(Type.EmptyTypes) is null)
+                {
+                    continue;
+                }
+
+                AddProfile((Profile)Activator.CreateInstance(type)!);
+            }
+        }
+        return this;
+    }
 }

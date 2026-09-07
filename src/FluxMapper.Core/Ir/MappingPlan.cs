@@ -18,7 +18,9 @@ public sealed record MappingPlan(
     IReadOnlyList<PlanDiagnostic> Diagnostics,
     CollectionPlan? CollectionPlan = null,
     DictionaryPlan? DictionaryPlan = null,
-    PolymorphismPlan? PolymorphismPlan = null)
+    PolymorphismPlan? PolymorphismPlan = null,
+    Action<object, object>? BeforeMap = null,
+    Action<object, object>? AfterMap = null)
 {
     // ProjectionPlan is implemented
     // separately in FluxMapper.Core/Projection rather than as a field on this record -- projection is
@@ -33,7 +35,7 @@ public sealed record MappingPlan(
     /// </summary>
     public bool IsBuildable =>
         Diagnostics.All(d => d.Severity != DiagnosticSeverity.Error)
-        && MemberPlans.Where(m => m.Strategy != MemberStrategy.Ignored)
+        && MemberPlans.Where(m => m.Strategy is not (MemberStrategy.Ignored or MemberStrategy.PathMapping))
                       .All(m => m.Source is not ResolvedSource.Unresolved);
 
     /// <summary>
@@ -41,7 +43,11 @@ public sealed record MappingPlan(
     /// root-level dictionary-to-dictionary map (<see cref="DictionaryPlan"/> populated, no
     /// <see cref="MemberPlans"/> to check) is never projection-safe for the same reason a dictionary-typed
     /// *member* isn't (see <see cref="MemberPlan.IsProjectionSafe"/>) -- <c>ToDictionary()</c> does not
-    /// translate over <c>IQueryable</c>.
+    /// translate over <c>IQueryable</c>. <see cref="BeforeMap"/>/<see cref="AfterMap"/> are plain delegates
+    /// invoked against a materialized instance -- there is nothing to splice into an <c>IQueryable</c>
+    /// expression tree, so their presence disqualifies the plan from projection the same way an unresolved
+    /// member does.
     /// </summary>
-    public bool IsProjectionSafe => DictionaryPlan is null && MemberPlans.All(m => m.IsProjectionSafe);
+    public bool IsProjectionSafe =>
+        DictionaryPlan is null && BeforeMap is null && AfterMap is null && MemberPlans.All(m => m.IsProjectionSafe);
 }

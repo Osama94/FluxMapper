@@ -1,3 +1,5 @@
+using FluxMapper.Core.Configuration;
+
 namespace FluxMapper.Tests.Model;
 
 // ---- Happy path: flat + nested + collection -------------------------------------------------
@@ -258,6 +260,61 @@ public partial class GeneratedOrderDto
     public decimal Total { get; set; }
 }
 
+// ---- ForMember / ConstructUsing / BeforeMap / AfterMap / Profile ------------------------------
+public class Widget
+{
+    public int Id { get; set; }
+    public string Sku { get; set; } = "";
+    public decimal Price { get; set; }
+}
+
+public class WidgetDto
+{
+    public int Id { get; set; }
+    public string ProductCode { get; set; } = "";
+    public decimal Price { get; set; }
+
+    // Getter-only: not discoverable as a "writable member" by TypeClassification.GetWritableMembers,
+    // so the only way it's ever populated is through ConstructUsing's constructor call -- proving that
+    // path actually ran, rather than just not throwing.
+    public string ConstructedBy { get; }
+
+    public bool BeforeMapRan { get; set; }
+    public bool AfterMapRan { get; set; }
+
+    public WidgetDto() => ConstructedBy = "default-ctor";
+    public WidgetDto(string constructedBy) => ConstructedBy = constructedBy;
+}
+
+public class WidgetProfile : Profile
+{
+    public WidgetProfile()
+    {
+        CreateMap<Widget, WidgetDto>()
+            .ForMember(d => d.ProductCode, opt => opt.MapFrom(s => s.Sku))
+            .Ignore(d => d.BeforeMapRan)
+            .Ignore(d => d.AfterMapRan)
+            .ConstructUsing(s => new WidgetDto($"ctor:{s.Sku}"))
+            .BeforeMap((s, d) => d.BeforeMapRan = true)
+            .AfterMap((s, d) => d.AfterMapRan = true);
+    }
+}
+
+// ---- Per-call ResolutionContext.Items + contextual (4-arg) MapFrom -----------------------------
+// Mirrors a real pattern: FluxMapper.Core's own resolver-call builder passes a default placeholder for
+// the "current value" and "destination" positions (see CompiledMapperFactory.BuildContextualResolverCall),
+// so only src and context carry real data -- exactly what the real usage this models discards the other
+// two params for (`(src, dest, _, context) => ...`).
+public class Article
+{
+    public string TextWithParams { get; set; } = "";
+}
+
+public class ArticleDto
+{
+    public string TextArWithParams { get; set; } = "";
+}
+
 // ---- DI integration ---------------------------
 // IGreetingService/GreetingResolver exist specifically to prove AddFluxMapper's IServiceProvider reaches
 // real resolver construction: GreetingResolver has NO parameterless constructor at all, so
@@ -285,4 +342,66 @@ public class GreetingDto
 {
     public string First { get; set; } = "";
     public string Greeting { get; set; } = "";
+}
+
+// ---- ForPath: a destination-path mapping when the nested segment has no source counterpart ----
+// Reproduces the real-world shape ForPath was built for: dest.Company.SaudiAddress vs
+// src.Company.NationalAddress -- not just differently-named leaves, but a destination-side nested
+// type with no corresponding source object at all, so ordinary convention-based nested mapping has
+// nothing to discover here.
+public class NationalAddress
+{
+    public string CityName { get; set; } = "";
+    public string Zip { get; set; } = "";
+}
+
+public class CompanySource
+{
+    public string Name { get; set; } = "";
+    public NationalAddress NationalAddress { get; set; } = new();
+}
+
+public class SaudiAddress
+{
+    public string City { get; set; } = "";
+    public string PostalCode { get; set; } = "";
+    // Deliberately left uncovered by any ForPath registration in the tests below, to prove a
+    // sibling member of a ForPath-touched type keeps its default value rather than being
+    // separately validated or convention-matched.
+    public string Region { get; set; } = "unmapped-default";
+}
+
+public class CompanyDestination
+{
+    public string Name { get; set; } = "";
+    public SaudiAddress SaudiAddress { get; set; } = null!;
+}
+
+// Counts constructions so a test can prove multiple ForPath calls sharing a common prefix
+// (d.SaudiAddress.City and d.SaudiAddress.PostalCode) merge into one constructed subtree instead
+// of each building their own SaudiAddress.
+public class CountingAddress
+{
+    public static int ConstructedCount;
+    public CountingAddress() => ConstructedCount++;
+    public string City { get; set; } = "";
+    public string PostalCode { get; set; } = "";
+}
+
+public class CompanyWithCountingAddress
+{
+    public CountingAddress SaudiAddress { get; set; } = null!;
+}
+
+// No public parameterless constructor -- a ForPath targeting this type must be reported as
+// MAP0004 at configuration-validation time, not discovered only when construction fails at runtime.
+public class UnconstructibleAddress(string seed)
+{
+    public string Seed { get; } = seed;
+    public string City { get; set; } = "";
+}
+
+public class CompanyWithUnconstructibleDestination
+{
+    public UnconstructibleAddress SaudiAddress { get; set; } = null!;
 }

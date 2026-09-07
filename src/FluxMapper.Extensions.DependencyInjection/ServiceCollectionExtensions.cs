@@ -1,3 +1,4 @@
+using System.Reflection;
 using FluxMapper.Abstractions;
 using FluxMapper.Core.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -65,4 +66,19 @@ public static class ServiceCollectionExtensions
 
         return services;
     }
+
+    /// <summary>
+    /// Scans <paramref name="assemblies"/> for <see cref="Profile"/> types and registers every map they
+    /// contain, mirroring AutoMapper's <c>services.AddAutoMapper(Assembly.GetExecutingAssembly())</c>
+    /// convention — the common case is "one call, at startup, with the executing assembly."
+    /// </summary>
+    public static IServiceCollection AddFluxMapper(
+        this IServiceCollection services,
+        ServiceLifetime mapperLifetime,
+        params Assembly[] assemblies)
+        => services.AddFluxMapper(cfg => cfg.AddMaps(assemblies), mapperLifetime);
+
+    /// <summary>Same as the <see cref="ServiceLifetime"/>-taking overload, defaulting to <see cref="ServiceLifetime.Singleton"/>.</summary>
+    public static IServiceCollection AddFluxMapper(this IServiceCollection services, params Assembly[] assemblies)
+        => services.AddFluxMapper(ServiceLifetime.Singleton, assemblies);
 }

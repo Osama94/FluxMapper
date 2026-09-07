@@ -23,4 +23,7 @@ public enum MemberStrategy
     CustomConverter,
     ConstructorArgument,
     Ignored,
+
+    /// <summary>Populated via one or more <c>ForPath</c> registrations -- see <see cref="PathPlan"/>.</summary>
+    PathMapping,
 }

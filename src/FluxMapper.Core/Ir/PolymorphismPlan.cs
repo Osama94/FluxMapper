@@ -1,8 +1,8 @@
 namespace FluxMapper.Core.Ir;
 
 /// <summary>
-/// One registered subtype pair that participates in a base-type mapping's polymorphic dispatch
-///. <paramref name="Plan"/> is the fully-built <see cref="MappingPlan"/>
+/// One registered subtype pair that participates in a base-type mapping's polymorphic dispatch.
+/// <paramref name="Plan"/> is the fully-built <see cref="MappingPlan"/>
 /// for the concrete (<paramref name="SourceSubtype"/>, <paramref name="DestinationSubtype"/>) pair --
 /// itself built through the exact same <see cref="Building.MappingPlanBuilder"/> pipeline as everything
 /// else, not a special case.

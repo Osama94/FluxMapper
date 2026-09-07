@@ -66,6 +66,72 @@ public sealed class Mapper(MapperConfiguration configuration, IServiceProvider? 
         return destination;
     }
 
+    [RequiresDynamicCode("Mode A/B mapping compiles System.Linq.Expressions trees via Expression.Compile(), which requires a JIT and is not supported when publishing Native AOT. Use the FluxMapper.SourceGenerator [MapFrom] path for an AOT-safe alternative.")]
+    [RequiresUnreferencedCode("Mode A/B mapping discovers mapped members via reflection over the source/destination types, which trimming can remove. Use the FluxMapper.SourceGenerator [MapFrom] path for a trim-safe alternative.")]
+    public TDestination Map<TSource, TDestination>(TSource source, Action<IMappingOperationOptions<TSource, TDestination>> configureOptions)
+    {
+        ArgumentNullException.ThrowIfNull(configureOptions);
+
+        var options = new MappingOperationOptions<TSource, TDestination>();
+        configureOptions(options);
+
+        TDestination destination;
+        if (options.Items.Count > 0)
+        {
+            // Only when the caller actually populated Items do we build and push a ResolutionContext --
+            // a plain Map() call (or per-call options that only set AfterMap) costs nothing extra, since
+            // ResolutionContext.Current stays null and every resolver call site falls back to its existing
+            // fresh-context behavior (see CompiledMapperFactory.BuildResolutionContextExpression).
+            var context = new ResolutionContext { Services = services };
+            foreach (var (key, value) in options.Items)
+            {
+                context.Items[key] = value;
+            }
+
+            using (ResolutionContext.Push(context))
+            {
+                destination = Map<TSource, TDestination>(source);
+            }
+        }
+        else
+        {
+            destination = Map<TSource, TDestination>(source);
+        }
+
+        if (source is not null)
+        {
+            options.AfterMapAction?.Invoke(source, destination);
+        }
+
+        return destination;
+    }
+
+    [RequiresDynamicCode("Mode A/B mapping compiles System.Linq.Expressions trees via Expression.Compile(), which requires a JIT and is not supported when publishing Native AOT. Use the FluxMapper.SourceGenerator [MapFrom] path for an AOT-safe alternative.")]
+    [RequiresUnreferencedCode("Mode A/B mapping discovers mapped members via reflection over the source/destination types, which trimming can remove. Use the FluxMapper.SourceGenerator [MapFrom] path for a trim-safe alternative.")]
+    public async Task<TDestination> MapAsync<TSource, TDestination>(TSource source, Func<TSource, TDestination, Task> afterMapAsync)
+    {
+        ArgumentNullException.ThrowIfNull(afterMapAsync);
+
+        var destination = Map<TSource, TDestination>(source);
+
+        if (source is not null)
+        {
+            await afterMapAsync(source, destination).ConfigureAwait(false);
+        }
+
+        return destination;
+    }
+
     public string Explain<TSource, TDestination>()
         => MappingExplanation.Format(configuration.GetPlan(typeof(TSource), typeof(TDestination)));
+}
+
+/// <summary>The concrete, mutable options bag <see cref="Mapper.Map{TSource,TDestination}(TSource,Action{IMappingOperationOptions{TSource,TDestination}})"/> hands to the caller's configuration callback.</summary>
+internal sealed class MappingOperationOptions<TSource, TDestination> : IMappingOperationOptions<TSource, TDestination>
+{
+    public Action<TSource, TDestination>? AfterMapAction { get; private set; }
+
+    public IDictionary<string, object?> Items { get; } = new Dictionary<string, object?>();
+
+    public void AfterMap(Action<TSource, TDestination> afterMap) => AfterMapAction = afterMap;
 }

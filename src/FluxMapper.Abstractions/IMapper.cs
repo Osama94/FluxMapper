@@ -38,6 +38,30 @@ public interface IMapper
     TDestination Map<TSource, TDestination>(TSource source, TDestination destination);
 
     /// <summary>
+    /// Mode A with a one-off, call-site-only hook — <c>mapper.Map(source, opt =&gt; opt.AfterMap((s, d) =&gt; ...))</c>
+    /// — for a callback that applies to this single call rather than every mapping of the pair. See
+    /// <see cref="IMappingOperationOptions{TSource,TDestination}"/> for why there is no per-call BeforeMap.
+    /// </summary>
+    [RequiresDynamicCode("Mode A/B mapping compiles System.Linq.Expressions trees via Expression.Compile(), which requires a JIT and is not supported when publishing Native AOT. Use the FluxMapper.SourceGenerator [MapFrom] path for an AOT-safe alternative.")]
+    [RequiresUnreferencedCode("Mode A/B mapping discovers mapped members via reflection over the source/destination types, which trimming can remove. Use the FluxMapper.SourceGenerator [MapFrom] path for a trim-safe alternative.")]
+    TDestination Map<TSource, TDestination>(TSource source, Action<IMappingOperationOptions<TSource, TDestination>> configureOptions);
+
+    /// <summary>
+    /// Maps <paramref name="source"/> synchronously, then awaits <paramref name="afterMapAsync"/> against
+    /// the finished <typeparamref name="TDestination"/> before returning it. This exists specifically
+    /// because AutoMapper's <c>AfterMap</c> delegate type is <c>Action&lt;TSource,TDestination&gt;</c> —
+    /// passing an <c>async</c> lambda there compiles, but the resulting <c>Task</c> is never awaited by
+    /// AutoMapper, so any exception or ordering guarantee the caller expected from that "await" silently
+    /// disappears (a genuine, observed bug pattern: <c>opt.AfterMap(async (src, dest) =&gt; dest.Status =
+    /// await GetStatusId(request))</c> is fire-and-forget). <see cref="MapAsync{TSource,TDestination}"/>
+    /// gives that same "do something async with the mapped result" need a signature that is actually
+    /// awaited end to end.
+    /// </summary>
+    [RequiresDynamicCode("Mode A/B mapping compiles System.Linq.Expressions trees via Expression.Compile(), which requires a JIT and is not supported when publishing Native AOT. Use the FluxMapper.SourceGenerator [MapFrom] path for an AOT-safe alternative.")]
+    [RequiresUnreferencedCode("Mode A/B mapping discovers mapped members via reflection over the source/destination types, which trimming can remove. Use the FluxMapper.SourceGenerator [MapFrom] path for a trim-safe alternative.")]
+    Task<TDestination> MapAsync<TSource, TDestination>(TSource source, Func<TSource, TDestination, Task> afterMapAsync);
+
+    /// <summary>
     /// Produces a human-readable explanation of how <typeparamref name="TSource"/> maps to
     /// <typeparamref name="TDestination"/> — a formatter over the underlying MappingPlan.
     /// </summary>

@@ -1,4 +1,5 @@
 using System.Reflection;
+using FluxMapper.Abstractions;
 
 namespace FluxMapper.Core.Ir;
 
@@ -37,6 +38,20 @@ public abstract record ResolvedSource
 
     /// <summary>A registered type-pair converter.</summary>
     public sealed record ValueConverter(Type ConverterType, Type SourceType, Type DestinationType) : ResolvedSource;
+
+    /// <summary>
+    /// An inline runtime resolver function supplied directly at configuration time via
+    /// <c>.ForMember(dest, opt =&gt; opt.MapFrom((src, dest, current, context) =&gt; ...))</c> -- no
+    /// resolver class needed. Erased to <c>Func&lt;object?,object?,object?,ResolutionContext,object?&gt;</c>
+    /// the same way <see cref="Configuration.TypeMapConfiguration"/> erases <c>Condition</c>/<c>BeforeMap</c>/
+    /// <c>AfterMap</c> delegates, since this non-generic record can't itself carry the strongly-typed
+    /// <c>Func&lt;TSource,TDestination,TMember,ResolutionContext,TMember&gt;</c> the caller wrote. Mirrors
+    /// AutoMapper's four-argument <c>MapFrom</c> overload -- most commonly used to read ambient per-call
+    /// state from <see cref="ResolutionContext.Items"/> inside a conditional expression, which a
+    /// compile-time <see cref="System.Linq.Expressions.Expression"/> (<see cref="InlineExpression"/>)
+    /// cannot do. Never projection-safe, for the same reason <see cref="ValueResolver"/> isn't.
+    /// </summary>
+    public sealed record ContextualResolver(Func<object?, object?, object?, ResolutionContext, object?> Resolver) : ResolvedSource;
 
     /// <summary>
     /// An explicit <c>.Map(dest, src =&gt; expr)</c> whose expression body is not a
