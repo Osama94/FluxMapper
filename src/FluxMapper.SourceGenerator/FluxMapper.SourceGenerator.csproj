@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The AOT-safe execution tier. Emits real C# at compile time, so consumers using it never go through
+    Expression.Compile() or reflection at all (ExecutionEligibility.AotSafe = true is an honest claim
+    for code that goes through this path, unlike the compiled-expression tier).
+
+    Targets netstandard2.0, the conventional target for a Roslyn analyzer/generator package, so it loads
+    inside any host compiler version regardless of a consumer's own SDK, not just one matching this
+    repo's own net10.0 development TFM. Two things follow from that:
+      - System.Collections.Immutable needs an explicit PackageReference here (it ships as part of the
+        net10.0 shared framework, but netstandard2.0 has no such built-in surface).
+      - `init`-only positional-record properties need System.Runtime.CompilerServices.IsExternalInit to
+        exist by name; see Polyfills.cs for the standard netstandard2.0 workaround.
+  -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnforceExtendedAnalyzerRules>false</EnforceExtendedAnalyzerRules>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);RS1035;RS1036;NU1701</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" PrivateAssets="all" />
+    <PackageReference Include="System.Collections.Immutable" Version="8.0.0" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!--
+    Standard "this is a Roslyn analyzer/generator package" layout. IncludeBuildOutput=false keeps the
+    DLL out of the normal lib/<tfm> folder (a generator must never be loaded as an ordinary binary
+    reference by a consumer, only as an analyzer), DevelopmentDependency=true keeps it out of a
+    consumer's own published output and out of transitive package references, and the explicit
+    None/Pack entry places the built DLL at analyzers/dotnet/cs, the path csc.exe/Roslyn actually scans
+    for analyzers/generators referenced via PackageReference.
+  -->
+  <PropertyGroup>
+    <PackageId>FluxMapper.SourceGenerator</PackageId>
+    <Description>Roslyn incremental source generator for FluxMapper's [MapFrom] attribute: emits an AOT-safe static MapFrom(source) factory method at compile time, zero reflection, zero Expression.Compile().</Description>
+    <IsPackable>true</IsPackable>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <DevelopmentDependency>true</DevelopmentDependency>
+    <NoPackageAnalysis>true</NoPackageAnalysis>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(OutputPath)\$(AssemblyName).dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

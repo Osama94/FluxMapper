@@ -1,0 +1,18 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FluxMapper.Abstractions/FluxMapper.Abstractions.csproj" />
+    <Project Path="src/FluxMapper.Core/FluxMapper.Core.csproj" />
+    <Project Path="src/FluxMapper.SourceGenerator/FluxMapper.SourceGenerator.csproj" />
+    <Project Path="src/FluxMapper.Analyzers/FluxMapper.Analyzers.csproj" />
+    <Project Path="src/FluxMapper.Extensions.DependencyInjection/FluxMapper.Extensions.DependencyInjection.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FluxMapper.Tests/FluxMapper.Tests.csproj" />
+  </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/FluxMapper.Benchmarks/FluxMapper.Benchmarks.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/FluxMapper.AotSmokeTest/FluxMapper.AotSmokeTest.csproj" />
+  </Folder>
+</Solution>

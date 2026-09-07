@@ -1,0 +1,21 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- This assembly is pure interfaces/POCOs/attributes plus IMapper, whose reflection/JIT-dependent
+         members are correctly annotated with [RequiresDynamicCode]/[RequiresUnreferencedCode] rather than
+         left for the analyzer to discover on its own. FluxMapper.Core is deliberately NOT marked this way:
+         most of its implementation genuinely needs the JIT/reflection, and only its public entry points
+         are annotated, not every internal call site. -->
+    <IsAotCompatible>true</IsAotCompatible>
+    <PackageId>FluxMapper.Abstractions</PackageId>
+    <Description>Core contracts for FluxMapper (IMapper, IValueResolver, IProjectionValueResolver, MapFromAttribute) with no dependency beyond the BCL. Fully AOT/trim compatible.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

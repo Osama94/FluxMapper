@@ -1,0 +1,41 @@
+# Build output
+bin/
+obj/
+artifacts/
+*.nupkg
+*.snupkg
+
+# Source-generator output written to disk for inspection (regenerated on every build)
+Generated/
+
+# Visual Studio / Rider / VS Code
+.vs/
+.vscode/
+.idea/
+*.user
+*.userosscache
+*.sln.docstates
+*.suo
+*.DotSettings.user
+
+# Test results
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+
+# Rider/ReSharper cache
+_ReSharper*/
+*.[Rr]e[Ss]harper
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Secrets — never commit these
+*.pfx
+*.snk
+.env
+appsettings.*.local.json
+# Internal planning/architecture notes -- not part of the shipped package, kept local only
+docs/

@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    This is a hand-rolled Stopwatch-based benchmark harness rather than a BenchmarkDotNet project: real
+    wall-clock measurements of real compiled code (warm JIT, many iterations averaged), not a placeholder.
+    Swap this for a real BenchmarkDotNet project (the scenarios below translate directly to
+    [Benchmark]-attributed methods on a class) as a future packaging follow-up if wanted.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\FluxMapper.Core\FluxMapper.Core.csproj" />
+    <ProjectReference Include="..\..\src\FluxMapper.Abstractions\FluxMapper.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\FluxMapper.SourceGenerator\FluxMapper.SourceGenerator.csproj"
+                       OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="Generated/**/*.cs" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Optimize>true</Optimize>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>Generated</CompilerGeneratedFilesOutputPath>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+</Project>

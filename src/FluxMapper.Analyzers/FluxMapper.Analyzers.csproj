@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Roslyn analyzers that run independently of whether the source generator is even in use. They check
+    configuration correctness (e.g. a [MapFrom] target that isn't declared partial) at edit time, in any
+    IDE, on any project, not just ones consuming FluxMapper.SourceGenerator's generated output.
+
+    Targets netstandard2.0, same as FluxMapper.SourceGenerator's csproj and for the same reason; see
+    that project's comment. System.Collections.Immutable needs an explicit PackageReference here for the
+    same reason too (not part of netstandard2.0's own surface, unlike the net10.0 shared framework).
+  -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnforceExtendedAnalyzerRules>false</EnforceExtendedAnalyzerRules>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);RS1035;RS1036;NU1701</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" PrivateAssets="all" />
+    <PackageReference Include="System.Collections.Immutable" Version="8.0.0" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Same analyzer-package layout as FluxMapper.SourceGenerator's csproj; see its comment. -->
+  <PropertyGroup>
+    <PackageId>FluxMapper.Analyzers</PackageId>
+    <Description>Roslyn analyzers for FluxMapper's [MapFrom] attribute: FLUX0001 (target must be partial) and FLUX0002 (no mappable members found), surfaced at edit time in any IDE.</Description>
+    <IsPackable>true</IsPackable>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <DevelopmentDependency>true</DevelopmentDependency>
+    <NoPackageAnalysis>true</NoPackageAnalysis>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(OutputPath)\$(AssemblyName).dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <!-- Required by the .NET SDK's built-in analyzer-release-tracking check (RS2008) for any project that
+       defines DiagnosticAnalyzer rules; without these, TreatWarningsAsErrors turns RS2008 into a build
+       error for FLUX0001/FLUX0002. -->
+  <ItemGroup>
+    <AdditionalFiles Include="AnalyzerReleases.Shipped.md" />
+    <AdditionalFiles Include="AnalyzerReleases.Unshipped.md" />
+  </ItemGroup>
+
+</Project>

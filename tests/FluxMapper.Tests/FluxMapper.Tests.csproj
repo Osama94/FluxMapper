@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\FluxMapper.Core\FluxMapper.Core.csproj" />
+    <ProjectReference Include="..\..\src\FluxMapper.Abstractions\FluxMapper.Abstractions.csproj" />
+    <!-- Loaded as an analyzer (generator), not a normal binary reference: proves the generator
+         actually runs as part of THIS project's own compilation. -->
+    <ProjectReference Include="..\..\src\FluxMapper.SourceGenerator\FluxMapper.SourceGenerator.csproj"
+                       OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    <!-- Referenced normally (not as an Analyzer item) here: AnalyzerTests.cs drives FluxMapper.Analyzers
+         programmatically against a small in-memory compilation (TestHelpers.GetAnalyzerDiagnosticsAsync)
+         to verify it actually reports FLUX0001/FLUX0002, rather than using the conventional
+         Microsoft.CodeAnalysis.Testing package. -->
+    <ProjectReference Include="..\..\src\FluxMapper.Analyzers\FluxMapper.Analyzers.csproj" />
+    <ProjectReference Include="..\..\src\FluxMapper.Extensions.DependencyInjection\FluxMapper.Extensions.DependencyInjection.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="coverlet.collector" Version="6.0.2">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.0" />
+    <!-- A real EF Core provider, not the hand-rolled StrictQueryProvider stand-in.
+         See EfCoreRealTests.cs. InMemory is used here because it is the lightest real EF Core query
+         pipeline to exercise in a unit test; it is more permissive than a relational provider's actual
+         SQL translator, so a pass here is meaningful but not as strong a guarantee as a relational
+         provider (SQL Server/Sqlite) would give; worth adding as a further follow-up if wanted. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <!-- EmitCompilerGeneratedFiles below writes the source generator's output to disk under Generated/ for
+       physical inspection; without this exclusion, the SECOND build (not the first) picks that file back
+       up via the default Compile glob in addition to the generator's own live in-memory output for the
+       same build, producing a duplicate-member error (CS0111) that is otherwise very confusing to debug. -->
+  <ItemGroup>
+    <Compile Remove="Generated/**/*.cs" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>Generated</CompilerGeneratedFilesOutputPath>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+</Project>

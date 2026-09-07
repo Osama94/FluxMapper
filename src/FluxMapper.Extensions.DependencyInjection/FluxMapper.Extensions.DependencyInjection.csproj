@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    A thin IServiceCollection integration. AddFluxMapper builds one MapperConfiguration and registers
+    it plus an IMapper alongside it, so a
+    consuming application constructor-injects IMapper instead of hand-wiring MapperConfiguration.Create(...)
+    itself. This project depends on FluxMapper.Core only (never the other way around), so a consumer who
+    does not use a DI container is never forced to reference Microsoft.Extensions.DependencyInjection at
+    all. See FluxMapper.Core's own Mapper/CompiledMapperFactory, which only ever depend on the
+    DI-container-agnostic System.IServiceProvider from the BCL, not this package.
+
+    Microsoft.Extensions.DependencyInjection.Abstractions is referenced via a normal PackageReference, so
+    it flows through to consumers as a real dependency in this package's own nuspec.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\FluxMapper.Core\FluxMapper.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.0" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PackageId>FluxMapper.Extensions.DependencyInjection</PackageId>
+    <Description>AddFluxMapper: IServiceCollection registration for FluxMapper.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>
