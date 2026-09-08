@@ -5,7 +5,7 @@ adaptive execution engine that picks the fastest safe strategy available — a c
 generator when it can, a cached compiled-expression tier when it can't, and real `IQueryable` projection
 (`ProjectTo<T>`) for EF Core and friends — instead of committing to reflection or expression trees alone.
 
-> **Status: v1.1.0.** The API surface and execution engine are implemented and
+> **Status: v1.1.1.** The API surface and execution engine are implemented and
 > covered by an xunit test suite (93 tests), including a real `Microsoft.EntityFrameworkCore.InMemory`
 > projection test and a real Native AOT publish smoke test. See "What's implemented" below.
 
