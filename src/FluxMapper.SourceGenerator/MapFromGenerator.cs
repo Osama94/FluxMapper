@@ -24,8 +24,8 @@ namespace FluxMapper.SourceGenerator;
 /// <item>Direct: exact name match, identity or implicit conversion -- the original, flat-DTO-only scope.</item>
 /// <item>Nested: a same-named destination member whose type is itself decorated with
 /// <c>[MapFrom(typeof(TSourceMemberType))]</c> composes to a call to that type's own generated
-/// <c>MapFrom(...)</c> -- with a null check spliced in first when the source member's type is a reference
-/// type, since the generated destination call otherwise can't express "map only if present."</item>
+/// <c>MapFromCore(...)</c> -- with a null check spliced in first when the source member's type is a
+/// reference type, since the generated destination call otherwise can't express "map only if present."</item>
 /// <item>Collection: a same-named member pair where both sides are exactly <c>List&lt;T&gt;</c> or a
 /// single-dimensional array (deliberately not any other <c>IEnumerable&lt;T&gt;</c> shape yet -- those two
 /// cover the overwhelming majority of real DTOs and keep the codegen here simple enough to trust without a
@@ -35,6 +35,35 @@ namespace FluxMapper.SourceGenerator;
 /// self-referencing object graph mapped through generated code will recurse exactly as far as the graph
 /// does, because there is no reflection-based identity map to consult at compile time.</item>
 /// </list>
+///
+/// Every generated destination type gets two static methods, not one: <c>MapFrom</c> (the public entry
+/// point, argument-null-checked) and <c>MapFromCore</c> (the same mapping, without that check). Nested and
+/// collection-element composition calls <c>MapFromCore</c> on the target type directly rather than
+/// <c>MapFrom</c>, to avoid re-checking a value this method has already established is non-null (for a
+/// nested member, checked immediately above via an explicit null-conditional; for a collection element,
+/// not separately checked -- see the perf/correctness tradeoff called out below). This is a deliberate
+/// performance choice: it removes a redundant argument-null branch from the hottest path this generator
+/// produces, closing most of the measured gap against Mapster's default runtime mode on nested/collection
+/// shapes (see the README's Benchmarks section and <c>COMPETITIVE_GAP_ANALYSIS.md</c>). The one behavioral
+/// consequence, stated plainly: a <c>null</c> element inside a mapped <c>List&lt;T&gt;</c>/array now
+/// surfaces as a <see cref="NullReferenceException"/> from inside <c>MapFromCore</c> rather than a clean
+/// <see cref="ArgumentNullException"/> from <c>MapFrom</c> -- the same failure mode C#'s own null-forgiving
+/// patterns produce when an assumed-non-null value turns out to be null. Calling <c>MapFromCore</c>
+/// directly (rather than through the generator's own composition) carries that same tradeoff; prefer the
+/// public <c>MapFrom</c> at any call site that hasn't already established non-null.
+///
+/// Collection codegen also avoids two allocation patterns a naive implementation would otherwise pay for:
+/// building into a <c>List&lt;T&gt;</c> via repeated <c>Add</c> calls when the final shape is an array
+/// (which used to mean a full second copy via <c>ToArray()</c>), and growing a <c>List&lt;T&gt;</c>
+/// incrementally when its final length is already known up front. An array destination is allocated at its
+/// exact final length and written by index directly. A <c>List&lt;T&gt;</c> destination is pre-sized via
+/// its capacity constructor and, when the target framework exposes
+/// <c>System.Runtime.InteropServices.CollectionsMarshal.SetCount</c> (.NET 8+), its backing storage is
+/// exposed as a <see cref="Span{T}"/> and written by index too -- the same zero-bounds-surprise, no-`Add`
+/// pattern as the array path. Older target frameworks (netstandard2.0) fall back to an indexed loop calling
+/// <c>Add</c>, which is still one allocation-free pass over a pre-sized list rather than the original
+/// enumerator-based <c>foreach</c>.
+///
 /// What's here is genuinely generated, genuinely compiled, and genuinely verified end-to-end for the flat
 /// case; the nested/collection cases are verified the same way, just with a narrower shape than the
 /// compiled-expression tier supports.
@@ -65,6 +94,12 @@ public sealed class MapFromGenerator : IIncrementalGenerator
 
         var compilation = ctx.SemanticModel.Compilation;
         var listOfT = compilation.GetTypeByMetadataName("System.Collections.Generic.List`1");
+
+        // Detected once per destination type against the CONSUMER's own compilation (not this generator's
+        // own TFM) -- a consumer targeting net8.0+ sees this as true and gets the Span-based fast path for
+        // List<T> destinations; a netstandard2.0 consumer sees false and gets the indexed-Add fallback.
+        var collectionsMarshal = compilation.GetTypeByMetadataName("System.Runtime.InteropServices.CollectionsMarshal");
+        var hasSetCount = collectionsMarshal is not null && collectionsMarshal.GetMembers("SetCount").Length > 0;
 
         var members = new List<MapFromMember>();
         var destinationProps = destinationSymbol.GetMembers().OfType<IPropertySymbol>()
@@ -131,12 +166,13 @@ public sealed class MapFromGenerator : IIncrementalGenerator
             SourceFullName: sourceSymbol.ToDisplayString(),
             Namespace: namespaceName,
             IsRecord: destinationSymbol.IsRecord,
+            HasCollectionsMarshalSetCount: hasSetCount,
             Members: ImmutableArray.CreateRange(members));
     }
 
     /// <summary>True when <paramref name="type"/> itself carries <c>[MapFrom(typeof(expectedSource))]</c> --
     /// the composition rule a nested or collection-element member relies on to call that type's own
-    /// generated <c>MapFrom(...)</c> rather than needing this generator to understand its shape.</summary>
+    /// generated <c>MapFromCore(...)</c> rather than needing this generator to understand its shape.</summary>
     private static bool HasMapFromFor(INamedTypeSymbol type, ITypeSymbol expectedSource)
     {
         foreach (var attr in type.GetAttributes())
@@ -202,7 +238,16 @@ public sealed class MapFromGenerator : IIncrementalGenerator
         sb.AppendLine($"    public static {model.DestinationFullName} MapFrom({model.SourceFullName} source)");
         sb.AppendLine("    {");
         sb.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(source);");
+        sb.AppendLine("        return MapFromCore(source);");
+        sb.AppendLine("    }");
         sb.AppendLine();
+        sb.AppendLine("    /// <summary>Same mapping as <c>MapFrom</c>, without its null-argument guard -- used internally when");
+        sb.AppendLine("    /// composing from an already-known-non-null nested member or collection element. Calling this");
+        sb.AppendLine("    /// directly with a null <c>source</c> throws <c>NullReferenceException</c> instead of the clean");
+        sb.AppendLine("    /// <c>ArgumentNullException</c> that <c>MapFrom</c> gives; prefer <c>MapFrom</c> at any call site that");
+        sb.AppendLine("    /// hasn't already established non-null.</summary>");
+        sb.AppendLine($"    public static {model.DestinationFullName} MapFromCore({model.SourceFullName} source)");
+        sb.AppendLine("    {");
 
         // Nested/collection members are computed into locals as statements *before* the final object
         // initializer -- an initializer expression can't contain a loop, and computing into a local first
@@ -228,12 +273,12 @@ public sealed class MapFromGenerator : IIncrementalGenerator
                     var local = $"__flux{localIndex++}";
                     if (member.SourceIsValueType)
                     {
-                        sb.AppendLine($"        var {local} = {member.DestinationTypeDisplay}.MapFrom(source.{member.Name});");
+                        sb.AppendLine($"        var {local} = {member.DestinationTypeDisplay}.MapFromCore(source.{member.Name});");
                     }
                     else
                     {
                         sb.AppendLine($"        var {local}Src = source.{member.Name};");
-                        sb.AppendLine($"        var {local} = {local}Src is null ? null! : {member.DestinationTypeDisplay}.MapFrom({local}Src);");
+                        sb.AppendLine($"        var {local} = {local}Src is null ? null! : {member.DestinationTypeDisplay}.MapFromCore({local}Src);");
                     }
 
                     sb.AppendLine();
@@ -244,20 +289,54 @@ public sealed class MapFromGenerator : IIncrementalGenerator
                 case MemberKind.Collection:
                 {
                     var list = $"__flux{localIndex++}";
+                    var countVar = $"{list}Count";
+                    var indexVar = $"{list}I";
                     var countAccessor = member.SourceIsArray ? "Length" : "Count";
-                    sb.AppendLine($"        var {list} = new global::System.Collections.Generic.List<{member.ElementDestinationTypeDisplay}>(source.{member.Name}.{countAccessor});");
-                    sb.AppendLine($"        foreach (var {list}Item in source.{member.Name})");
-                    sb.AppendLine("        {");
-                    var elementExpr = member.ElementNeedsMapFrom
-                        ? $"{member.ElementDestinationTypeDisplay}.MapFrom({list}Item)"
-                        : member.ElementNeedsCast
-                            ? $"({member.ElementDestinationTypeDisplay}){list}Item"
-                            : $"{list}Item";
-                    sb.AppendLine($"            {list}.Add({elementExpr});");
-                    sb.AppendLine("        }");
-                    sb.AppendLine();
 
-                    initializerLines.Add(member.DestinationIsArray ? $"{member.Name} = {list}.ToArray()," : $"{member.Name} = {list},");
+                    string ElementExprAt(string indexer) =>
+                        member.ElementNeedsMapFrom
+                            ? $"{member.ElementDestinationTypeDisplay}.MapFromCore(source.{member.Name}[{indexer}])"
+                            : member.ElementNeedsCast
+                                ? $"({member.ElementDestinationTypeDisplay})source.{member.Name}[{indexer}]"
+                                : $"source.{member.Name}[{indexer}]";
+
+                    sb.AppendLine($"        var {countVar} = source.{member.Name}.{countAccessor};");
+
+                    if (member.DestinationIsArray)
+                    {
+                        // Exact-length array, written by index -- no intermediate List<T>, no ToArray() copy.
+                        sb.AppendLine($"        var {list} = new {member.ElementDestinationTypeDisplay}[{countVar}];");
+                        sb.AppendLine($"        for (var {indexVar} = 0; {indexVar} < {countVar}; {indexVar}++)");
+                        sb.AppendLine("        {");
+                        sb.AppendLine($"            {list}[{indexVar}] = {ElementExprAt(indexVar)};");
+                        sb.AppendLine("        }");
+                    }
+                    else if (model.HasCollectionsMarshalSetCount)
+                    {
+                        // Pre-sized List<T>, backing storage exposed as a Span<T> and written by index --
+                        // same no-`Add`-bounds-check shape as the array path above (net8.0+ only).
+                        var span = $"{list}Span";
+                        sb.AppendLine($"        var {list} = new global::System.Collections.Generic.List<{member.ElementDestinationTypeDisplay}>({countVar});");
+                        sb.AppendLine($"        global::System.Runtime.InteropServices.CollectionsMarshal.SetCount({list}, {countVar});");
+                        sb.AppendLine($"        var {span} = global::System.Runtime.InteropServices.CollectionsMarshal.AsSpan({list});");
+                        sb.AppendLine($"        for (var {indexVar} = 0; {indexVar} < {countVar}; {indexVar}++)");
+                        sb.AppendLine("        {");
+                        sb.AppendLine($"            {span}[{indexVar}] = {ElementExprAt(indexVar)};");
+                        sb.AppendLine("        }");
+                    }
+                    else
+                    {
+                        // netstandard2.0 fallback: still a pre-sized, single allocation-free pass, just via
+                        // indexed `Add` instead of a Span (CollectionsMarshal.SetCount isn't available there).
+                        sb.AppendLine($"        var {list} = new global::System.Collections.Generic.List<{member.ElementDestinationTypeDisplay}>({countVar});");
+                        sb.AppendLine($"        for (var {indexVar} = 0; {indexVar} < {countVar}; {indexVar}++)");
+                        sb.AppendLine("        {");
+                        sb.AppendLine($"            {list}.Add({ElementExprAt(indexVar)});");
+                        sb.AppendLine("        }");
+                    }
+
+                    sb.AppendLine();
+                    initializerLines.Add($"{member.Name} = {list},");
                     break;
                 }
             }
@@ -302,5 +381,6 @@ public sealed class MapFromGenerator : IIncrementalGenerator
         string SourceFullName,
         string? Namespace,
         bool IsRecord,
+        bool HasCollectionsMarshalSetCount,
         ImmutableArray<MapFromMember> Members);
 }
