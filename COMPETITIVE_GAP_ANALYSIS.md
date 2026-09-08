@@ -96,19 +96,27 @@ which most Mapster users don't actually run. FluxMapper's `[MapFrom]` tier *is* 
 to Mapster's opt-in Codegen mode by default, with no separate CLI step required — and the flat-scenario
 numbers above bear that out.
 
-### 3. Compiled-expression tier is slow on nested/collection shapes — NEW, impact: medium–high, effort: medium
+### 3. Compiled-expression tier is slow on nested/collection shapes — ADDRESSED (September 2026), one gap remains
 
-Surfaced by the benchmark added for item 2, not previously known: on a nested-object-plus-collection
-mapping (`BenchUser` → `BenchUserDto`, one nested object and a 3-element list), FluxMapper's
-compiled-expression tier measured 1954.4 ns/op — slower than AutoMapper (461.1 ns/op), Mapster's default
-mode (330.9 ns/op), and even a plain hand-written LINQ-based mapping (786.7 ns/op). The source-generated
-tier isn't in this comparison at all because `[MapFrom]`'s generator doesn't cover nested/collection shapes
-yet (see item 7, source-generator coverage) — so this is the tier most consumers actually hit for anything
-beyond a flat DTO today, and it's currently the worst option on the list for that shape, not merely
-"slower than the fast path." Worth a focused look at `CompiledMapperFactory`/`ChainExpressionBuilder`'s
-codegen for nested member access and collection population specifically — likely something building more
-`Expression` nodes or doing more allocation per element than necessary — before claiming a performance win
-more broadly than "flat DTOs" in any marketing copy.
+Originally surfaced by the benchmark added for item 2: on a nested-object-plus-collection mapping
+(`BenchUser` → `BenchUserDto`, one nested object and a 3-element list), FluxMapper's compiled-expression
+tier measured 1954.4 ns/op — slower than AutoMapper (461.1 ns/op), Mapster's default mode (330.9 ns/op),
+and even a plain hand-written LINQ-based mapping (786.7 ns/op). Root cause: `CompiledMapperFactory`'s
+collection codegen built an `Enumerable.Select(...).ToList()` LINQ pipeline, which allocates a LINQ
+iterator plus a per-element closure-capturing delegate on every call. Fixed by replacing it with a
+directly-compiled loop that splices each element's mapping expression inline (array/`List<T>`/`IList<T>`
+indexed access where available, a `foreach`-equivalent enumerator loop otherwise) — no LINQ, no per-element
+delegate. Re-measured at 299.3 ns/op, a ~6.5x improvement, now ahead of hand-written LINQ (334.1 ns/op).
+
+Separately, `[MapFrom]`'s source generator was extended (see item 7) to compose nested members and
+`List<T>`/array collections, not just flat DTOs. On this same shape the generated tier now measures
+240.1 ns/op — the best FluxMapper result for this shape, beating AutoMapper (280.6 ns/op) outright. The
+one gap that remains, honestly: Mapster's default runtime mode is still faster here (175.8 ns/op, about
+27% ahead of FluxMapper's best). The one identified, not-yet-taken lever to close more of that gap is
+skipping the generated code's redundant `ArgumentNullException.ThrowIfNull` calls on nested/element
+`MapFrom` invocations — it would save a few nanoseconds per call, but a null list element would then throw
+a bare `NullReferenceException` instead of a clean `ArgumentNullException`, a correctness/failure-mode
+tradeoff that hasn't been decided yet.
 
 ### 4. No global, reusable type-pair converters — MEDIUM, impact: medium, effort: medium
 
@@ -135,14 +143,23 @@ AutoMapper has years of accreted third-party packages (`AutoMapper.Collection`,
 those packages solve, FluxMapper already covers natively (projection, resolvers) — but worth tracking as
 an ecosystem-maturity gap rather than a code gap. Not a near-term priority.
 
-### 7. Source generator coverage is narrower than Mapster.Tool's — LOW near-term / HIGH long-term bet, effort: high
+### 7. Source generator coverage is narrower than Mapster.Tool's — PARTIALLY ADDRESSED (September 2026)
 
 `Mapster.Tool` can generate code for a wide swath of a mapping configuration (attribute-based, fluent
-`ICodeGenerationRegister`, and interface-based styles). FluxMapper's generator currently covers `[MapFrom]`
-on flat DTOs specifically. This is arguably FluxMapper's actual moat — expanding the AOT-safe generated
-surface further (more of what `CreateMap`/`Profile` can express, not just flat `[MapFrom]`) is a bigger
-engineering bet than anything else on this list, but it's the one place where "more powerful than both of
-them combined" is a genuinely available, differentiated outcome rather than parity-chasing.
+`ICodeGenerationRegister`, and interface-based styles). `[MapFrom]`'s generator originally covered only
+flat DTOs (exact-name matches with an identity or implicit conversion). It now also composes two more
+member shapes at build time: a nested member whose destination type itself carries a matching
+`[MapFrom(typeof(...))]` attribute, and a collection member where both sides are exactly `List<T>` or a
+single-dimensional array (with direct or nested-composable elements) — covering the shapes most real DTOs
+actually need beyond a flat record, and closing part of the nested/collection performance gap in item 3
+along the way (the generated tier is now the fastest FluxMapper option on that shape). Deliberately still
+out of scope, to keep the generator's string-templated codegen simple enough to trust: no cycle/reference
+protection (AutoMapper-style shared-instance dedup, which the compiled-expression tier does support), no
+`HashSet<T>`/`Dictionary<TKey,TValue>`/`Immutable*` collection targets, and no equivalent of `CreateMap`'s
+fuller fluent configuration surface (custom resolvers, conditions, `ForPath`, etc.) — those remain the
+compiled-expression tier's job. Expanding further in that direction is still the bigger, longer-term bet:
+it's the one place where "more powerful than both of them combined" is a genuinely available,
+differentiated outcome rather than parity-chasing.
 
 ### Cosmetic, fix while you're in there — DONE (v1.2.0)
 
@@ -166,10 +183,11 @@ form — don't copy API shape just because AutoMapper has it; copy outcomes.
    `dotnet build`/`dotnet test` on both target frameworks.
 2. ~~Publish an independent benchmark~~ — **done, v1.2.0**: see item 2 above and the README's Benchmarks
    section. This also surfaced a real follow-up (item 3) rather than closing the topic entirely.
-3. **Next, now that it's a known, measured gap rather than a guess**: investigate and fix the
-   compiled-expression tier's nested/collection performance (item 3). This is higher priority than it
-   would have been pre-benchmark, since it's now a number a prospective adopter can find and compare
-   themselves.
+3. ~~Investigate and fix the compiled-expression tier's nested/collection performance~~ — **done,
+   September 2026**: rewrote the LINQ-based collection codegen as a direct compiled loop (1954.4 ns/op →
+   299.3 ns/op) and extended `[MapFrom]`'s source generator to nested/collection shapes (240.1 ns/op, the
+   new best result — see items 3 and 7). One gap remains, tracked honestly rather than closed by omission:
+   Mapster's default mode is still ~27% faster than FluxMapper's best on this specific shape.
 4. **Then**: fix the `LICENSE` copyright text (done — see below) and add 2–3 built-in naming-convention
    presets on top of the existing primitives; global type-pair converters.
 5. **Bigger, longer-term bet**: broaden source-generator coverage beyond flat `[MapFrom]` DTOs (item 7) —

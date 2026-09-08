@@ -260,6 +260,26 @@ public partial class GeneratedOrderDto
     public decimal Total { get; set; }
 }
 
+// GeneratedUserDto.MapFrom(User) composes two more generator-emitted paths on top of the flat one above:
+// a nested member (Address -> GeneratedAddressDto, itself [MapFrom]-attributed) and a List<T> collection
+// member (Orders -> List<GeneratedOrderDto>, reusing GeneratedOrderDto above as the element type) -- see
+// MapFromGenerator's own doc comment for the exact scope of what it recognizes as nested/collection.
+[FluxMapper.Abstractions.MapFrom(typeof(Address))]
+public partial class GeneratedAddressDto
+{
+    public string City { get; set; } = "";
+    public string Street { get; set; } = "";
+}
+
+[FluxMapper.Abstractions.MapFrom(typeof(User))]
+public partial class GeneratedUserDto
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public GeneratedAddressDto Address { get; set; } = new();
+    public List<GeneratedOrderDto> Orders { get; set; } = [];
+}
+
 // ---- ForMember / ConstructUsing / BeforeMap / AfterMap / Profile ------------------------------
 public class Widget
 {

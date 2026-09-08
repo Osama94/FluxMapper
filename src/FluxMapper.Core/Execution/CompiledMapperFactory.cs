@@ -552,6 +552,35 @@ public static class CompiledMapperFactory
                 Expression.Convert(BuildDispatchExpression(plan, rawSourceExpr, refContext, services), destinationType)));
     }
 
+    /// <summary>
+    /// Builds a collection member as a compiled <c>for</c>/<c>while</c> loop over the source elements,
+    /// splicing each element's mapping expression directly into the loop body instead of calling a
+    /// separately-compiled per-element delegate. This replaced an earlier <c>Enumerable.Select(...).ToList()</c>
+    /// (or <c>.ToArray()</c>/etc.) pipeline: correct, but paying for a LINQ iterator allocation, a
+    /// closure-capturing delegate for the per-element lambda, and virtual <c>MoveNext()</c>/<c>Current</c>
+    /// dispatch on every element, on top of the actual per-element mapping work -- overhead that a
+    /// benchmark (see <c>benchmarks/FluxMapper.Benchmarks</c> and <c>COMPETITIVE_GAP_ANALYSIS.md</c>) showed
+    /// dominating small collections badly enough to make this tier the slowest of three real-world mappers
+    /// on a nested+collection shape.
+    ///
+    /// Two shapes are generated, chosen once per member at plan-build time from the source's static type
+    /// (never re-checked per call):
+    /// <list type="bullet">
+    /// <item>Source is an array, a <see cref="List{T}"/>, or implements <see cref="IList{T}"/>/
+    /// <see cref="IReadOnlyList{T}"/> (arrays and <see cref="List{T}"/> resolve to a direct, non-virtual
+    /// <c>Length</c>/indexer or <c>Count</c>/indexer access -- no interface dispatch at all for the two most
+    /// common cases): <see cref="BuildIndexedLoop"/> emits a counted <c>for</c> loop writing straight into a
+    /// pre-sized destination array via <c>Expression.ArrayAccess</c>, which
+    /// <see cref="MaterializeCollection"/> then wraps (or, for an <see cref="Array"/> target, returns
+    /// as-is -- zero extra copies) into whatever collection kind the destination member actually needs.</item>
+    /// <item>Any other <see cref="IEnumerable{T}"/> (a computed property, a query result, a
+    /// <see cref="HashSet{T}"/> source, etc.): <see cref="BuildEnumeratorLoop"/> emits the same
+    /// <c>GetEnumerator()</c>/<c>MoveNext()</c>/<c>Current</c>/<c>Dispose()</c> shape the C# compiler itself
+    /// emits for <c>foreach</c>, appending each mapped element straight onto a destination
+    /// <see cref="List{T}"/> (pre-sized from <see cref="ICollection{T}.Count"/> when the source has one) --
+    /// still no per-element delegate call, just no known count to index by ahead of time.</item>
+    /// </list>
+    /// </summary>
     private static Expression BuildCollectionExpression(CollectionPlan collectionPlan, Expression sourceCollectionExpr, Type destinationType, Expression? refContext, IServiceProvider? services)
     {
         var sourceElementType = collectionPlan.SourceElementType;
@@ -559,40 +588,11 @@ public static class CompiledMapperFactory
 
         Expression BuildFrom(Expression typedRoot)
         {
-            var enumerableSourceType = typeof(IEnumerable<>).MakeGenericType(sourceElementType);
-            var asEnumerable = Expression.Convert(typedRoot, enumerableSourceType);
+            var sequence = TryGetIndexedAccessors(typedRoot, sourceElementType, out var count, out var itemAt)
+                ? BuildIndexedLoop(count, itemAt, destinationElementType, collectionPlan, refContext, services)
+                : BuildEnumeratorLoop(typedRoot, sourceElementType, destinationElementType, collectionPlan, refContext, services);
 
-            var elementParam = Expression.Parameter(sourceElementType, "e");
-            var elementBody = collectionPlan.ElementPlan is not null
-                ? BuildCachedComplexValue(collectionPlan.ElementPlan, elementParam, destinationElementType, refContext, services)
-                : Expression.Convert(elementParam, destinationElementType);
-            var elementLambda = Expression.Lambda(elementBody, elementParam);
-
-            var selectMethod = typeof(Enumerable).GetMethods(BindingFlags.Public | BindingFlags.Static)
-                .First(m => m.Name == nameof(Enumerable.Select) && m.GetParameters().Length == 2)
-                .MakeGenericMethod(sourceElementType, destinationElementType);
-            Expression selected = Expression.Call(selectMethod, asEnumerable, elementLambda);
-
-            Expression materialized = collectionPlan.TargetKind switch
-            {
-                CollectionTargetKind.Array => Expression.Call(
-                    typeof(Enumerable).GetMethod(nameof(Enumerable.ToArray))!.MakeGenericMethod(destinationElementType), selected),
-                CollectionTargetKind.HashSet => Expression.New(
-                    typeof(HashSet<>).MakeGenericType(destinationElementType)
-                        .GetConstructor([typeof(IEnumerable<>).MakeGenericType(destinationElementType)])!,
-                    selected),
-                CollectionTargetKind.ImmutableArray => Expression.Call(
-                    FindEnumerableExtensionMethod(typeof(System.Collections.Immutable.ImmutableArray), "ToImmutableArray")
-                        .MakeGenericMethod(destinationElementType), selected),
-                CollectionTargetKind.ImmutableList => Expression.Call(
-                    FindEnumerableExtensionMethod(typeof(System.Collections.Immutable.ImmutableList), "ToImmutableList")
-                        .MakeGenericMethod(destinationElementType), selected),
-                CollectionTargetKind.ImmutableHashSet => Expression.Call(
-                    FindEnumerableExtensionMethod(typeof(System.Collections.Immutable.ImmutableHashSet), "ToImmutableHashSet")
-                        .MakeGenericMethod(destinationElementType), selected),
-                _ => Expression.Call(
-                    typeof(Enumerable).GetMethod(nameof(Enumerable.ToList))!.MakeGenericMethod(destinationElementType), selected),
-            };
+            var materialized = MaterializeCollection(sequence, collectionPlan.TargetKind, destinationElementType);
 
             return destinationType.IsAssignableFrom(materialized.Type)
                 ? materialized
@@ -611,6 +611,202 @@ public static class CompiledMapperFactory
                 Expression.Equal(temp, Expression.Constant(null, sourceCollectionExpr.Type)),
                 Expression.Default(destinationType),
                 BuildFrom(temp)));
+    }
+
+    /// <summary>
+    /// Build-time (not per-call) check for whether <paramref name="coll"/>'s static type supports
+    /// <c>Count</c> + an integer indexer -- an array, an exact <see cref="List{T}"/>, or anything
+    /// implementing <see cref="IList{T}"/> or <see cref="IReadOnlyList{T}"/> for <paramref name="elementType"/>.
+    /// Arrays and the exact <see cref="List{T}"/> case bind directly to those types' own (non-virtual)
+    /// members rather than going through an interface, since those two cover the overwhelming majority of
+    /// real-world collection members. Returns the accessors as build-time values (an <see cref="Expression"/>
+    /// for the count, and a delegate from an index expression to an element-access expression) rather than
+    /// performing any of the actual indexing here -- this method only decides whether the fast, indexed loop
+    /// shape applies at all.
+    /// </summary>
+    private static bool TryGetIndexedAccessors(Expression coll, Type elementType, out Expression count, out Func<Expression, Expression> itemAt)
+    {
+        var collType = coll.Type;
+
+        if (collType.IsArray)
+        {
+            count = Expression.ArrayLength(coll);
+            itemAt = index => Expression.ArrayIndex(coll, index);
+            return true;
+        }
+
+        var listType = typeof(List<>).MakeGenericType(elementType);
+        if (collType == listType)
+        {
+            var countProperty = listType.GetProperty(nameof(List<object>.Count))!;
+            var itemProperty = listType.GetProperty("Item")!;
+            count = Expression.Property(coll, countProperty);
+            itemAt = index => Expression.Property(coll, itemProperty, index);
+            return true;
+        }
+
+        var listInterface = typeof(IList<>).MakeGenericType(elementType);
+        if (listInterface.IsAssignableFrom(collType))
+        {
+            var typed = collType == listInterface ? coll : Expression.Convert(coll, listInterface);
+            var countProperty = typeof(ICollection<>).MakeGenericType(elementType).GetProperty(nameof(ICollection<object>.Count))!;
+            var itemProperty = listInterface.GetProperty("Item")!;
+            count = Expression.Property(typed, countProperty);
+            itemAt = index => Expression.Property(typed, itemProperty, index);
+            return true;
+        }
+
+        var readOnlyListInterface = typeof(IReadOnlyList<>).MakeGenericType(elementType);
+        if (readOnlyListInterface.IsAssignableFrom(collType))
+        {
+            var typed = collType == readOnlyListInterface ? coll : Expression.Convert(coll, readOnlyListInterface);
+            var countProperty = typeof(IReadOnlyCollection<>).MakeGenericType(elementType).GetProperty(nameof(IReadOnlyCollection<object>.Count))!;
+            var itemProperty = readOnlyListInterface.GetProperty("Item")!;
+            count = Expression.Property(typed, countProperty);
+            itemAt = index => Expression.Property(typed, itemProperty, index);
+            return true;
+        }
+
+        count = null!;
+        itemAt = null!;
+        return false;
+    }
+
+    /// <summary>
+    /// Emits <c>var arr = new TDest[count]; for (var i = 0; i &lt; count; i++) arr[i] = &lt;element&gt;;</c>
+    /// directly as an expression tree, evaluating to the destination array. <paramref name="count"/> and
+    /// <paramref name="itemAt"/> come from <see cref="TryGetIndexedAccessors"/>, so this never re-derives
+    /// how to read the source -- it only owns the loop and destination-array shape.
+    /// </summary>
+    private static Expression BuildIndexedLoop(Expression count, Func<Expression, Expression> itemAt, Type destinationElementType, CollectionPlan collectionPlan, Expression? refContext, IServiceProvider? services)
+    {
+        var countVar = Expression.Variable(typeof(int), "count");
+        var indexVar = Expression.Variable(typeof(int), "i");
+        var destArrayVar = Expression.Variable(destinationElementType.MakeArrayType(), "destArr");
+        var breakLabel = Expression.Label("collectionLoopBreak");
+
+        var elementSource = itemAt(indexVar);
+        var elementValue = collectionPlan.ElementPlan is not null
+            ? BuildCachedComplexValue(collectionPlan.ElementPlan, elementSource, destinationElementType, refContext, services)
+            : Expression.Convert(elementSource, destinationElementType);
+
+        var loopBody = Expression.IfThenElse(
+            Expression.LessThan(indexVar, countVar),
+            Expression.Block(
+                typeof(void),
+                Expression.Assign(Expression.ArrayAccess(destArrayVar, indexVar), elementValue),
+                Expression.Assign(indexVar, Expression.Add(indexVar, Expression.Constant(1)))),
+            Expression.Break(breakLabel));
+
+        return Expression.Block(
+            destArrayVar.Type,
+            [countVar, indexVar, destArrayVar],
+            Expression.Assign(countVar, count),
+            Expression.Assign(destArrayVar, Expression.NewArrayBounds(destinationElementType, countVar)),
+            Expression.Assign(indexVar, Expression.Constant(0)),
+            Expression.Loop(loopBody, breakLabel),
+            destArrayVar);
+    }
+
+    /// <summary>
+    /// Fallback for a source with no known count/indexer: the same <c>GetEnumerator()</c>/<c>MoveNext()</c>/
+    /// <c>Current</c>/<c>try</c>-<c>finally</c>-<c>Dispose()</c> shape the C# compiler emits for
+    /// <c>foreach</c>, appending each mapped element onto a destination <see cref="List{T}"/> (pre-sized from
+    /// <see cref="ICollection{T}"/>'s <c>Count</c> when the source happens to have one, e.g. a
+    /// <see cref="HashSet{T}"/>, even though it has no indexer to loop by). Still splices the element's
+    /// mapping expression directly into the loop rather than calling a per-element delegate.
+    /// </summary>
+    private static Expression BuildEnumeratorLoop(Expression coll, Type sourceElementType, Type destinationElementType, CollectionPlan collectionPlan, Expression? refContext, IServiceProvider? services)
+    {
+        var enumerableType = typeof(IEnumerable<>).MakeGenericType(sourceElementType);
+        var enumeratorType = typeof(IEnumerator<>).MakeGenericType(sourceElementType);
+        var getEnumeratorMethod = enumerableType.GetMethod(nameof(IEnumerable<object>.GetEnumerator))!;
+        var moveNextMethod = typeof(System.Collections.IEnumerator).GetMethod(nameof(System.Collections.IEnumerator.MoveNext))!;
+        var currentProperty = enumeratorType.GetProperty(nameof(IEnumerator<object>.Current))!;
+        var disposeMethod = typeof(IDisposable).GetMethod(nameof(IDisposable.Dispose))!;
+
+        var listType = typeof(List<>).MakeGenericType(destinationElementType);
+        var listVar = Expression.Variable(listType, "destList");
+        var enumeratorVar = Expression.Variable(enumeratorType, "srcEnumerator");
+        var breakLabel = Expression.Label("collectionLoopBreak");
+
+        var elementSource = Expression.Property(enumeratorVar, currentProperty);
+        var elementValue = collectionPlan.ElementPlan is not null
+            ? BuildCachedComplexValue(collectionPlan.ElementPlan, elementSource, destinationElementType, refContext, services)
+            : Expression.Convert(elementSource, destinationElementType);
+
+        var genericCollectionInterface = typeof(ICollection<>).MakeGenericType(sourceElementType);
+        Expression newList = genericCollectionInterface.IsAssignableFrom(coll.Type)
+            ? Expression.New(
+                listType.GetConstructor([typeof(int)])!,
+                Expression.Property(Expression.Convert(coll, genericCollectionInterface), nameof(ICollection<object>.Count)))
+            : Expression.New(listType);
+
+        var addMethod = listType.GetMethod(nameof(List<object>.Add))!;
+
+        var loop = Expression.TryFinally(
+            Expression.Loop(
+                Expression.IfThenElse(
+                    Expression.Call(enumeratorVar, moveNextMethod),
+                    Expression.Call(listVar, addMethod, elementValue),
+                    Expression.Break(breakLabel)),
+                breakLabel),
+            Expression.Call(enumeratorVar, disposeMethod));
+
+        return Expression.Block(
+            listType,
+            [listVar, enumeratorVar],
+            Expression.Assign(listVar, newList),
+            Expression.Assign(enumeratorVar, Expression.Call(Expression.Convert(coll, enumerableType), getEnumeratorMethod)),
+            loop,
+            listVar);
+    }
+
+    /// <summary>
+    /// Turns the array (from <see cref="BuildIndexedLoop"/>) or <see cref="List{T}"/> (from
+    /// <see cref="BuildEnumeratorLoop"/>) already holding every mapped element into the destination shape
+    /// <paramref name="kind"/> actually calls for. The two cheapest cases are handled without any further
+    /// copy at all: an <see cref="CollectionTargetKind.Array"/> target backed by the indexed-loop's array
+    /// returns it unchanged, and the default (list/enumerable) target backed by the enumerator-loop's list
+    /// likewise returns it unchanged -- a copy only happens when the sequence's own shape doesn't already
+    /// match what's needed (e.g. building a <see cref="List{T}"/> from the indexed loop's array, via the
+    /// single-allocation <c>List{T}(IEnumerable{T})</c> constructor's <see cref="ICollection{T}"/>
+    /// fast path, rather than growing one element at a time).
+    /// </summary>
+    private static Expression MaterializeCollection(Expression sequence, CollectionTargetKind kind, Type destinationElementType)
+    {
+        var isArraySequence = sequence.Type.IsArray;
+
+        return kind switch
+        {
+            CollectionTargetKind.Array => isArraySequence
+                ? sequence
+                : Expression.Call(typeof(Enumerable).GetMethod(nameof(Enumerable.ToArray))!.MakeGenericMethod(destinationElementType), sequence),
+
+            CollectionTargetKind.HashSet => Expression.New(
+                typeof(HashSet<>).MakeGenericType(destinationElementType)
+                    .GetConstructor([typeof(IEnumerable<>).MakeGenericType(destinationElementType)])!,
+                sequence),
+
+            CollectionTargetKind.ImmutableArray => Expression.Call(
+                FindEnumerableExtensionMethod(typeof(System.Collections.Immutable.ImmutableArray), "ToImmutableArray")
+                    .MakeGenericMethod(destinationElementType), sequence),
+
+            CollectionTargetKind.ImmutableList => Expression.Call(
+                FindEnumerableExtensionMethod(typeof(System.Collections.Immutable.ImmutableList), "ToImmutableList")
+                    .MakeGenericMethod(destinationElementType), sequence),
+
+            CollectionTargetKind.ImmutableHashSet => Expression.Call(
+                FindEnumerableExtensionMethod(typeof(System.Collections.Immutable.ImmutableHashSet), "ToImmutableHashSet")
+                    .MakeGenericMethod(destinationElementType), sequence),
+
+            _ => isArraySequence
+                ? Expression.New(
+                    typeof(List<>).MakeGenericType(destinationElementType)
+                        .GetConstructor([typeof(IEnumerable<>).MakeGenericType(destinationElementType)])!,
+                    sequence)
+                : sequence,
+        };
     }
 
     /// <summary>

@@ -884,13 +884,16 @@ classifies them normally.
 See `benchmarks/FluxMapper.Benchmarks` for a runnable comparison of both FluxMapper execution tiers
 against hand-written mapping, AutoMapper, and Mapster (`dotnet run -c Release --project
 benchmarks/FluxMapper.Benchmarks`). One measured run: on a flat DTO, FluxMapper's source-generated tier
-(43.0 ns/op) is close to hand-written code (37.6 ns/op) and beats both AutoMapper 14.0.0 (480.6 ns/op) and
-Mapster's default runtime mode (278.8 ns/op) outright. On a nested-object-plus-collection shape, the
-result is the opposite: `[MapFrom]`'s source generator doesn't cover that shape yet, so only the
-compiled-expression tier runs, at 1954.4 ns/op -- slower than AutoMapper (461.1 ns/op), Mapster
-(330.9 ns/op), and even hand-written LINQ (786.7 ns/op). See
-[`COMPETITIVE_GAP_ANALYSIS.md`](COMPETITIVE_GAP_ANALYSIS.md) for the full numbers and the tracked
-follow-up on nested/collection codegen performance.
+(28.5 ns/op) is the outright winner, edging out even hand-written code (29.8 ns/op) and beating both
+AutoMapper 14.0.0 (230.2 ns/op) and Mapster's default runtime mode (89.9 ns/op). On a
+nested-object-plus-collection shape, `[MapFrom]`'s source generator now composes nested members and
+`List<T>`/array collections too, and that tier is again the best FluxMapper result (240.1 ns/op) --
+beating AutoMapper (280.6 ns/op) outright, though still behind Mapster's default mode (175.8 ns/op) by
+around 27% on this specific shape. The compiled-expression tier, used when `[MapFrom]` doesn't apply, was
+rewritten to build a direct loop instead of a LINQ pipeline and improved roughly 6.5x on this shape (from
+an original 1954.4 ns/op down to 299.3 ns/op), now ahead of hand-written LINQ (334.1 ns/op). See
+[`COMPETITIVE_GAP_ANALYSIS.md`](COMPETITIVE_GAP_ANALYSIS.md) for the full numbers and the one remaining,
+honestly-tracked gap (Mapster's default mode on nested+collection shapes).
 
 ---
 

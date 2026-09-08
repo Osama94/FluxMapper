@@ -107,8 +107,9 @@ Console.WriteLine(new string('-', 100));
 
 // ---------------------------------------------------------------------------
 // scenario 2: nested + collection mapping -- the case the compiled-expression tier's caching and
-// null-safe chain navigation exist for; the source generator doesn't reach this shape (flat-only scope
-// today), so it's omitted here.
+// null-safe chain navigation exist for. The source generator now reaches this shape too (nested members
+// compose via a same-named [MapFrom]-attributed member type; List<T>/array collections compose the same
+// way per element) via BenchUserGeneratedDto -- see Model.cs.
 // ---------------------------------------------------------------------------
 Console.WriteLine();
 Console.WriteLine("Scenario 2: nested + collection mapping (BenchUser -> BenchUserDto, 1 nested + 3-element list)");
@@ -147,6 +148,8 @@ Console.WriteLine(new string('-', 100));
 
     user.Adapt<BenchUserDto>(); // Mapster warm-up, same reason as scenario 1
 
+    BenchUserGeneratedDto.MapFrom(user); // no delegate to warm up (it's generated static code, not compiled at runtime) -- just confirms it runs before timing starts
+
     BenchUserDto ManualMap(BenchUser u) => new()
     {
         Id = u.Id,
@@ -157,6 +160,7 @@ Console.WriteLine(new string('-', 100));
 
     Bench("Manual hand-written mapping", Warmup, Iterations, () => { _ = ManualMap(user); });
     Bench("FluxMapper: compiled-expression tier", Warmup, Iterations, () => { _ = mapper.Map<BenchUserDto>(user); });
+    Bench("FluxMapper: source-generated tier (AOT-safe)", Warmup, Iterations, () => { _ = BenchUserGeneratedDto.MapFrom(user); });
     Bench("AutoMapper 14.0.0 (last MIT version)", Warmup, Iterations, () => { _ = autoMapper.Map<BenchUserDto>(user); });
     Bench("Mapster (default runtime mode)", Warmup, Iterations, () => { _ = user.Adapt<BenchUserDto>(); });
     Bench("Naive reflection (worst-case baseline)", Warmup / 10, Iterations / 10, () => { _ = ReflectionMap<BenchUserDto>(user); });

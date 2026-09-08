@@ -21,8 +21,9 @@ public class BenchOrderDto
     public string Customer { get; set; } = "";
 }
 
-// The source generator is flat-only, so its comparison point is this same
-// flat shape -- [MapFrom(typeof(BenchOrder))] emits a static MapFrom(BenchOrder) factory at compile time.
+// [MapFrom(typeof(BenchOrder))] emits a static MapFrom(BenchOrder) factory at compile time -- this
+// same flat type doubles as the Orders element type for BenchUserGeneratedDto below, once the source
+// generator's nested/collection support needs a [MapFrom]-attributed element to compose against.
 [FluxMapper.Abstractions.MapFrom(typeof(BenchOrder))]
 public partial class BenchOrderGeneratedDto
 {
@@ -58,4 +59,25 @@ public class BenchUserDto
     public string Name { get; set; } = "";
     public BenchAddressDto Address { get; set; } = new();
     public List<BenchOrderDto> Orders { get; set; } = [];
+}
+
+// The source generator now composes nested/List<T> members too (see MapFromGenerator's own doc comment
+// for the exact scope: nested via a same-named member whose type is itself [MapFrom]-attributed,
+// collections via an exact List<T>/array on both sides) -- BenchUserGeneratedDto exercises that directly,
+// reusing BenchOrderGeneratedDto (already [MapFrom]-attributed above) as its Orders element type so the
+// per-element mapping is itself generated code, not a fallback.
+[FluxMapper.Abstractions.MapFrom(typeof(BenchAddress))]
+public partial class BenchAddressGeneratedDto
+{
+    public string City { get; set; } = "";
+    public string Street { get; set; } = "";
+}
+
+[FluxMapper.Abstractions.MapFrom(typeof(BenchUser))]
+public partial class BenchUserGeneratedDto
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public BenchAddressGeneratedDto Address { get; set; } = new();
+    public List<BenchOrderGeneratedDto> Orders { get; set; } = [];
 }
