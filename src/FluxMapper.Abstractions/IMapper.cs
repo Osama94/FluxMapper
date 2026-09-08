@@ -66,4 +66,25 @@ public interface IMapper
     /// <typeparamref name="TDestination"/> — a formatter over the underlying MappingPlan.
     /// </summary>
     string Explain<TSource, TDestination>();
+
+    /// <summary>
+    /// An opt-in fast path for hot loops: returns a genuinely typed <c>Func&lt;TSource,TDestination&gt;</c>
+    /// compiled directly against those two types -- no <c>object</c> parameter, no boxing/casting at the
+    /// call boundary, and (once the caller stores the returned delegate, e.g. in a local outside a loop)
+    /// no per-call cache lookup at all. <see cref="Map{TDestination}(object)"/> and
+    /// <see cref="Map{TSource, TDestination}(TSource)"/> deliberately keep paying a small, constant
+    /// per-call cost (an <c>object</c>-boxed entry point plus a <c>source.GetType()</c> read) in exchange
+    /// for supporting runtime-polymorphic dispatch through a single, non-generic-source call site; this
+    /// method is for a caller who knows the exact static type pair ahead of time and wants every last bit
+    /// of that overhead gone for a call made millions of times (e.g. a bulk import/export job). Polymorphic
+    /// subtype dispatch configured on the plan, if any, still fires correctly through the returned
+    /// delegate -- only the outer entry boundary changes from <c>object</c> to <typeparamref name="TSource"/>.
+    /// The returned delegate is cached per (<typeparamref name="TSource"/>, <typeparamref name="TDestination"/>)
+    /// pair, scoped to this <c>IMapper</c> instance -- never a process-wide static, for the same
+    /// multi-<c>MapperConfiguration</c> correctness reason every other cache on this interface's
+    /// implementation already documents.
+    /// </summary>
+    [RequiresDynamicCode("Mode A/B mapping compiles System.Linq.Expressions trees via Expression.Compile(), which requires a JIT and is not supported when publishing Native AOT. Use the FluxMapper.SourceGenerator [MapFrom] path for an AOT-safe alternative.")]
+    [RequiresUnreferencedCode("Mode A/B mapping discovers mapped members via reflection over the source/destination types, which trimming can remove. Use the FluxMapper.SourceGenerator [MapFrom] path for a trim-safe alternative.")]
+    Func<TSource, TDestination> GetTypedMapper<TSource, TDestination>();
 }

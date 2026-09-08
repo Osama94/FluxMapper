@@ -72,6 +72,56 @@ public static class CompiledMapperFactory
         return Expression.Lambda<Func<object?, object?>>(block, sourceParam).Compile();
     }
 
+    /// <summary>
+    /// The typed sibling of <see cref="BuildConstructDelegate"/>, backing <see cref="Mapper.GetTypedMapper{TSource,TDestination}"/>.
+    /// Compiles a lambda parameterized directly on <typeparamref name="TSource"/>/<typeparamref name="TDestination"/>
+    /// instead of <c>object</c> -- when <typeparamref name="TSource"/> is exactly <see cref="MappingPlan.SourceType"/>
+    /// (the overwhelmingly common case), the parameter is fed straight into <see cref="BuildRoot"/> with no
+    /// intermediate local variable or cast at all, unlike <see cref="BuildConstructDelegate"/>'s
+    /// object-boundary shape, which always declares and assigns a typed local from a
+    /// <c>Convert(sourceParam, plan.SourceType)</c>. Every downstream builder method
+    /// (<see cref="BuildRoot"/>, <see cref="BuildDispatchExpression"/>, etc.) already takes a plain
+    /// <see cref="Expression"/> for "the current source", so this reuses that exact same, already-tested
+    /// tree-building code -- only the outer parameter/null-check/return shell differs from the
+    /// object-boxed version above.
+    /// </summary>
+    [RequiresDynamicCode("Compiles a System.Linq.Expressions tree via Expression.Compile(), which requires a JIT and is not supported when publishing Native AOT.")]
+    [RequiresUnreferencedCode("Builds the compiled delegate using reflection (MemberInfo/ConstructorInfo/MethodInfo) over the mapped types, which trimming can remove.")]
+    public static Func<TSource, TDestination> BuildTypedConstructDelegate<TSource, TDestination>(MappingPlan plan, IServiceProvider? services = null)
+    {
+        if (!plan.IsBuildable)
+        {
+            var diagnostic = plan.Diagnostics.First(d => d.Severity == DiagnosticSeverity.Error);
+            return _ => throw new MappingException(diagnostic);
+        }
+
+        var sourceParam = Expression.Parameter(typeof(TSource), "source");
+        Expression typedSourceExpr = typeof(TSource) == plan.SourceType
+            ? sourceParam
+            : Expression.Convert(sourceParam, plan.SourceType);
+
+        var blockVars = new List<ParameterExpression>();
+        var prelude = new List<Expression>();
+        var refContext = DeclareReferenceContextIfNeeded(plan, blockVars, prelude);
+        var body = BuildRoot(plan, typedSourceExpr, refContext, services);
+        var convertedBody = Expression.Convert(body, typeof(TDestination));
+
+        Expression finalExpr = IsNullableGuardCandidate(typeof(TSource))
+            ? Expression.Condition(
+                Expression.Equal(sourceParam, Expression.Constant(null, typeof(TSource))),
+                Expression.Default(typeof(TDestination)),
+                convertedBody)
+            : convertedBody;
+
+        prelude.Add(finalExpr);
+
+        Expression lambdaBody = blockVars.Count == 0 && prelude.Count == 1
+            ? prelude[0]
+            : Expression.Block(typeof(TDestination), blockVars, prelude);
+
+        return Expression.Lambda<Func<TSource, TDestination>>(lambdaBody, sourceParam).Compile();
+    }
+
     /// <summary>Builds an update-in-place delegate: <c>(object? source, object destination) -&gt; void</c>.</summary>
     [RequiresDynamicCode("Compiles a System.Linq.Expressions tree via Expression.Compile(), which requires a JIT and is not supported when publishing Native AOT.")]
     [RequiresUnreferencedCode("Builds the compiled delegate using reflection (MemberInfo/ConstructorInfo/MethodInfo) over the mapped types, which trimming can remove.")]

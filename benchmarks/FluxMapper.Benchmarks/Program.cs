@@ -119,6 +119,7 @@ Console.WriteLine(new string('-', 100));
     var config = MapperConfiguration.Create(cfg => cfg.CreateMap<BenchOrder, BenchOrderDto>());
     var mapper = config.CreateMapper();
     mapper.Map<BenchOrderDto>(order); // force delegate compilation before timing starts
+    var fastOrderMap = mapper.GetTypedMapper<BenchOrder, BenchOrderDto>(); // opt-in typed fast path, grabbed once outside the timed loop -- see IMapper.GetTypedMapper
 
     var autoMapperConfig = new AutoMapperConfiguration(cfg => cfg.CreateMap<BenchOrder, BenchOrderDto>());
     var autoMapper = autoMapperConfig.CreateMapper();
@@ -130,6 +131,7 @@ Console.WriteLine(new string('-', 100));
 
     Bench("Manual hand-written mapping", Warmup, Iterations, () => { _ = ManualMap(order); });
     Bench("FluxMapper: compiled-expression tier", Warmup, Iterations, () => { _ = mapper.Map<BenchOrderDto>(order); });
+    Bench("FluxMapper: typed fast-path (GetTypedMapper)", Warmup, Iterations, () => { _ = fastOrderMap(order); });
     Bench("FluxMapper: source-generated tier (AOT-safe)", Warmup, Iterations, () => { _ = BenchOrderGeneratedDto.MapFrom(order); });
     Bench("AutoMapper 14.0.0 (last MIT version)", Warmup, Iterations, () => { _ = autoMapper.Map<BenchOrderDto>(order); });
     Bench("Mapster (default runtime mode)", Warmup, Iterations, () => { _ = order.Adapt<BenchOrderDto>(); });
@@ -167,6 +169,7 @@ Console.WriteLine(new string('-', 100));
     });
     var mapper = config.CreateMapper();
     mapper.Map<BenchUserDto>(user);
+    var fastUserMap = mapper.GetTypedMapper<BenchUser, BenchUserDto>(); // opt-in typed fast path, grabbed once outside the timed loop -- see IMapper.GetTypedMapper
 
     var autoMapperConfig = new AutoMapperConfiguration(cfg =>
     {
@@ -191,6 +194,7 @@ Console.WriteLine(new string('-', 100));
 
     Bench("Manual hand-written mapping", Warmup, Iterations, () => { _ = ManualMap(user); });
     Bench("FluxMapper: compiled-expression tier", Warmup, Iterations, () => { _ = mapper.Map<BenchUserDto>(user); });
+    Bench("FluxMapper: typed fast-path (GetTypedMapper)", Warmup, Iterations, () => { _ = fastUserMap(user); });
     Bench("FluxMapper: source-generated tier (AOT-safe)", Warmup, Iterations, () => { _ = BenchUserGeneratedDto.MapFrom(user); });
     Bench("AutoMapper 14.0.0 (last MIT version)", Warmup, Iterations, () => { _ = autoMapper.Map<BenchUserDto>(user); });
     Bench("Mapster (default runtime mode)", Warmup, Iterations, () => { _ = user.Adapt<BenchUserDto>(); });

@@ -28,6 +28,53 @@ public sealed class Mapper(MapperConfiguration configuration, IServiceProvider? 
 {
     private readonly ConcurrentDictionary<(Type, Type), Func<object?, object?>> _constructCache = new();
     private readonly ConcurrentDictionary<(Type, Type), Action<object?, object>> _updateCache = new();
+    private readonly ConcurrentDictionary<(Type, Type), Delegate> _typedConstructCache = new();
+
+    // A one-entry "last used type pair" inline cache in front of each ConcurrentDictionary above.
+    // Real-world (and every benchmarked) usage overwhelmingly maps the SAME (source, destination) pair
+    // repeatedly in a loop, not a shuffled mix of many pairs -- for that shape, three reference
+    // comparisons against a cached entry beat a dictionary's hash-and-bucket-walk on every single call,
+    // while a miss (a genuinely different pair, or interleaved pairs) just falls straight through to the
+    // proven-correct dictionary path below with the cost of one discarded comparison. Each entry is an
+    // immutable, atomically-swapped reference (never a mutable struct written field-by-field), so a
+    // concurrent reader can only ever see a fully-formed old or new entry, never a torn mix of one pair's
+    // Type with another pair's delegate -- correctness holds under concurrent access even without a lock,
+    // the same way the ConcurrentDictionary fallback already does.
+    private sealed class CacheEntry<TDelegate>(Type sourceType, Type destinationType, TDelegate del)
+    {
+        public Type SourceType { get; } = sourceType;
+        public Type DestinationType { get; } = destinationType;
+        public TDelegate Delegate { get; } = del;
+    }
+
+    private CacheEntry<Func<object?, object?>>? _lastConstruct;
+    private CacheEntry<Action<object?, object>>? _lastUpdate;
+
+    /// <summary>
+    /// See <see cref="IMapper.GetTypedMapper{TSource,TDestination}"/> -- builds (once, then caches per
+    /// (TSource,TDestination) pair on this instance) a delegate compiled directly against
+    /// <typeparamref name="TSource"/>/<typeparamref name="TDestination"/> via
+    /// <see cref="CompiledMapperFactory.BuildTypedConstructDelegate{TSource,TDestination}"/>, so a caller
+    /// who stores the returned <see cref="Func{TSource,TDestination}"/> outside a hot loop pays neither
+    /// the object-boxed entry point nor any cache lookup on subsequent calls. Assignment (not
+    /// <c>GetOrAdd</c>'s factory overload) on a miss, same reasoning as <see cref="_constructCache"/>
+    /// above: a concurrent miss on the same key can build the delegate twice, but both builds are
+    /// functionally identical, so the only cost of that race is a discarded duplicate build, never a
+    /// correctness issue.
+    /// </summary>
+    [RequiresDynamicCode("Mode A/B mapping compiles System.Linq.Expressions trees via Expression.Compile(), which requires a JIT and is not supported when publishing Native AOT. Use the FluxMapper.SourceGenerator [MapFrom] path for an AOT-safe alternative.")]
+    [RequiresUnreferencedCode("Mode A/B mapping discovers mapped members via reflection over the source/destination types, which trimming can remove. Use the FluxMapper.SourceGenerator [MapFrom] path for a trim-safe alternative.")]
+    public Func<TSource, TDestination> GetTypedMapper<TSource, TDestination>()
+    {
+        var key = (typeof(TSource), typeof(TDestination));
+        if (_typedConstructCache.TryGetValue(key, out var cached))
+            return (Func<TSource, TDestination>)cached;
+
+        var built = CompiledMapperFactory.BuildTypedConstructDelegate<TSource, TDestination>(
+            configuration.GetPlan(typeof(TSource), typeof(TDestination)), services);
+        _typedConstructCache[key] = built;
+        return built;
+    }
 
     [RequiresDynamicCode("Mode A/B mapping compiles System.Linq.Expressions trees via Expression.Compile(), which requires a JIT and is not supported when publishing Native AOT. Use the FluxMapper.SourceGenerator [MapFrom] path for an AOT-safe alternative.")]
     [RequiresUnreferencedCode("Mode A/B mapping discovers mapped members via reflection over the source/destination types, which trimming can remove. Use the FluxMapper.SourceGenerator [MapFrom] path for a trim-safe alternative.")]
@@ -45,23 +92,36 @@ public sealed class Mapper(MapperConfiguration configuration, IServiceProvider? 
 
         var sourceType = source.GetType();
         var destinationType = typeof(TDestination);
-        var key = (sourceType, destinationType);
 
-        // TryGetValue first, and build-then-GetOrAdd(TKey,TValue) rather than GetOrAdd's Func<TKey,TValue>
-        // factory overload, on a miss: that factory overload's factory closes over `this` (it reads
-        // `configuration`/`services`), so passing one on every call would allocate a fresh delegate on this
-        // hot path even when the value is already cached and the factory is never actually invoked -- a
-        // real, measured cost on a call this hot, not a theoretical one. Building the delegate eagerly
-        // before the atomic insert means a concurrent miss on the same key can build it twice (same as the
-        // factory overload could invoke its factory more than once); whichever result lands first in the
-        // dictionary wins, and the delegates are functionally equivalent either way, so the only cost of
-        // that race is a discarded duplicate build, not a correctness issue.
-        if (!_constructCache.TryGetValue(key, out var del))
+        var last = _lastConstruct;
+        Func<object?, object?>? del;
+        if (last is not null && last.SourceType == sourceType && last.DestinationType == destinationType)
         {
-            del = _constructCache.GetOrAdd(key, CompiledMapperFactory.BuildConstructDelegate(configuration.GetPlan(sourceType, destinationType), services));
+            del = last.Delegate;
+        }
+        else
+        {
+            var key = (sourceType, destinationType);
+
+            // TryGetValue first, and build-then-GetOrAdd(TKey,TValue) rather than GetOrAdd's
+            // Func<TKey,TValue> factory overload, on a miss: that factory overload's factory closes over
+            // `this` (it reads `configuration`/`services`), so passing one on every call would allocate a
+            // fresh delegate on this hot path even when the value is already cached and the factory is
+            // never actually invoked -- a real, measured cost on a call this hot, not a theoretical one.
+            // Building the delegate eagerly before the atomic insert means a concurrent miss on the same
+            // key can build it twice (same as the factory overload could invoke its factory more than
+            // once); whichever result lands first in the dictionary wins, and the delegates are
+            // functionally equivalent either way, so the only cost of that race is a discarded duplicate
+            // build, not a correctness issue.
+            if (!_constructCache.TryGetValue(key, out del))
+            {
+                del = _constructCache.GetOrAdd(key, CompiledMapperFactory.BuildConstructDelegate(configuration.GetPlan(sourceType, destinationType), services));
+            }
+
+            _lastConstruct = new CacheEntry<Func<object?, object?>>(sourceType, destinationType, del!);
         }
 
-        return (TDestination)del(source)!;
+        return (TDestination)del!(source)!;
     }
 
     [RequiresDynamicCode("Update-in-place mapping compiles System.Linq.Expressions trees via Expression.Compile(), which requires a JIT and is not supported when publishing Native AOT.")]
@@ -73,16 +133,28 @@ public sealed class Mapper(MapperConfiguration configuration, IServiceProvider? 
 
         var sourceType = source.GetType();
         var destinationType = typeof(TDestination);
-        var key = (sourceType, destinationType);
 
-        // Same TryGetValue-first, build-then-GetOrAdd(TKey,TValue) shape as Map<TSource,TDestination> above,
-        // and for the same reason -- see that method's comment.
-        if (!_updateCache.TryGetValue(key, out var del))
+        var last = _lastUpdate;
+        Action<object?, object>? del;
+        if (last is not null && last.SourceType == sourceType && last.DestinationType == destinationType)
         {
-            del = _updateCache.GetOrAdd(key, CompiledMapperFactory.BuildUpdateDelegate(configuration.GetPlan(sourceType, destinationType), services));
+            del = last.Delegate;
+        }
+        else
+        {
+            var key = (sourceType, destinationType);
+
+            // Same one-entry-inline-cache-then-TryGetValue-then-build-then-GetOrAdd(TKey,TValue) shape as
+            // Map<TSource,TDestination> above, and for the same reasons -- see that method's comments.
+            if (!_updateCache.TryGetValue(key, out del))
+            {
+                del = _updateCache.GetOrAdd(key, CompiledMapperFactory.BuildUpdateDelegate(configuration.GetPlan(sourceType, destinationType), services));
+            }
+
+            _lastUpdate = new CacheEntry<Action<object?, object>>(sourceType, destinationType, del!);
         }
 
-        del(source, destination);
+        del!(source, destination);
         return destination;
     }
 
