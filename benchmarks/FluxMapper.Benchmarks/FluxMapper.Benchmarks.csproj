@@ -20,6 +20,19 @@
     version avoids any question about it, and it is also the version realistically still running in most
     free-tier codebases that have not paid to upgrade.
   -->
+  <!--
+    NU1903: AutoMapper has a known high-severity DoS advisory (GHSA-rvv3-g6hj-g44x / CVE-2026-32933,
+    uncontrolled recursion -> StackOverflowException) affecting every version before 15.1.1, which
+    includes 14.0.0, the version pinned above. There is no version of AutoMapper that is both unaffected
+    and still under the original MIT license: the fix landed in 15.1.1, after the commercial-licensing
+    change in 15.0.0. Suppressed here, narrowly, for this one project only: this benchmark never ships,
+    never runs against untrusted input, and maps simple flat/nested POCOs with no self-referential or
+    deeply nested structure for the exploit to recurse through.
+  -->
+  <PropertyGroup>
+    <NoWarn>$(NoWarn);NU1903</NoWarn>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="AutoMapper" Version="14.0.0" />
     <PackageReference Include="Mapster" Version="10.0.12" />

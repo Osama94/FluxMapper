@@ -50,6 +50,41 @@ namespace System.Diagnostics.CodeAnalysis
 
         public string? Url { get; set; }
     }
+
+    /// <summary>
+    /// Polyfill for the real .NET 5+ BCL attribute of the same name. Needed so that ArgumentGuard's
+    /// ThrowIfNull (see FluxMapper.Core/Internal/ArgumentGuard.cs and
+    /// FluxMapper.Extensions.DependencyInjection/ArgumentGuard.cs) can annotate its argument the same way
+    /// the real ArgumentNullException.ThrowIfNull does -- without this, nullable flow analysis has no way
+    /// to know the argument is non-null after a passing call, which surfaces as spurious CS8604 warnings
+    /// (errors, given this repo's TreatWarningsAsErrors) at every call site that relies on it.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Parameter, Inherited = false)]
+    public sealed class NotNullAttribute : Attribute
+    {
+    }
+}
+
+namespace System.Collections.Generic
+{
+    /// <summary>
+    /// Polyfill for the real netstandard2.1+/.NET Core 2.1+ BCL type of the same name, needed by
+    /// <see cref="ResolutionContext"/>'s reference-identity map (see Resolvers.cs) for
+    /// <c>PreserveReferences</c>'s cycle/shared-reference tracking. <c>internal</c> is enough: it's only
+    /// used within this same assembly, unlike the two attribute polyfills above.
+    /// </summary>
+    internal sealed class ReferenceEqualityComparer : IEqualityComparer<object?>
+    {
+        private ReferenceEqualityComparer()
+        {
+        }
+
+        public static ReferenceEqualityComparer Instance { get; } = new();
+
+        public bool Equals(object? x, object? y) => ReferenceEquals(x, y);
+
+        public int GetHashCode(object? obj) => obj is null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
+    }
 }
 
 #endif
