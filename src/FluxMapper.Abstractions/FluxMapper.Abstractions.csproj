@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFrameworks>netstandard2.0;net10.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <!-- This assembly is pure interfaces/POCOs/attributes plus IMapper, whose reflection/JIT-dependent
@@ -9,7 +9,8 @@
          left for the analyzer to discover on its own. FluxMapper.Core is deliberately NOT marked this way:
          most of its implementation genuinely needs the JIT/reflection, and only its public entry points
          are annotated, not every internal call site. -->
-    <IsAotCompatible>true</IsAotCompatible>
+    <!-- AOT analysis is a net10.0-only concept; the netstandard2.0 leg doesn't get it. -->
+    <IsAotCompatible Condition="'$(TargetFramework)' == 'net10.0'">true</IsAotCompatible>
     <PackageId>FluxMapper.Abstractions</PackageId>
     <Description>Core contracts for FluxMapper (IMapper, IValueResolver, IProjectionValueResolver, MapFromAttribute) with no dependency beyond the BCL. Fully AOT/trim compatible.</Description>
   </PropertyGroup>
@@ -17,6 +18,7 @@
   <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
     <None Include="..\..\DOCUMENTATION.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\icon.png" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>

@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using FluxMapper.Core.Configuration;
+using FluxMapper.Core.Internal;
 
 namespace FluxMapper.Core.Projection;
 
@@ -20,8 +21,8 @@ public static class ProjectionExtensions
     [RequiresUnreferencedCode("Builds the projection expression using reflection (MemberInfo/MethodInfo) over the mapped types, which trimming can remove.")]
     public static IQueryable<TDestination> ProjectTo<TDestination>(this IQueryable source, MapperConfiguration configuration)
     {
-        ArgumentNullException.ThrowIfNull(source);
-        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentGuard.ThrowIfNull(source, nameof(source));
+        ArgumentGuard.ThrowIfNull(configuration, nameof(configuration));
 
         var plan = configuration.GetPlan(source.ElementType, typeof(TDestination));
         ProjectionValidator.EnsureProjectable(plan);
@@ -54,7 +55,7 @@ public static class ProjectionExtensions
     [RequiresUnreferencedCode("Builds the projection expression using reflection (MemberInfo/MethodInfo) over the mapped types, which trimming can remove.")]
     public static Expression<Func<TSource, TDestination>> GetProjectionExpression<TSource, TDestination>(this MapperConfiguration configuration)
     {
-        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentGuard.ThrowIfNull(configuration, nameof(configuration));
         var plan = configuration.GetPlan(typeof(TSource), typeof(TDestination));
         ProjectionValidator.EnsureProjectable(plan);
         return (Expression<Func<TSource, TDestination>>)ProjectionExpressionBuilder.BuildLambda(plan);

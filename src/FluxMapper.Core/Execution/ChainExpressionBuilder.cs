@@ -18,7 +18,7 @@ internal static class ChainExpressionBuilder
 {
     public static Expression BuildSafeAccess(Expression root, IReadOnlyList<MemberInfo> members)
     {
-        var leafType = MemberValueTypeHelper.GetMemberType(members[^1]);
+        var leafType = MemberValueTypeHelper.GetMemberType(members[members.Count - 1]);
         return Build(root, members, 0, leafType);
     }
 

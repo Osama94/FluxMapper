@@ -868,6 +868,23 @@ differ:
 | `FluxMapper.Analyzers` | Roslyn (build-time only) | `[MapFrom]` diagnostics (`FLUX0001`/`FLUX0002`). |
 | `FluxMapper.Extensions.DependencyInjection` | `FluxMapper.Core` | `AddFluxMapper` for `IServiceCollection`. |
 
+`FluxMapper`, `FluxMapper.Abstractions`, `FluxMapper.Core`, and `FluxMapper.Extensions.DependencyInjection`
+each multi-target `netstandard2.0` and `net10.0`, so referencing them does not require being on .NET 10 --
+.NET Framework 4.6.1+, .NET Core 2.0+, and every currently supported .NET version can all consume the
+netstandard2.0 build. `FluxMapper.SourceGenerator` and `FluxMapper.Analyzers` target `netstandard2.0` only,
+which is normal for Roslyn components: they run inside whatever compiler/IDE host builds your project,
+not inside your app's own runtime, so your app's target framework doesn't constrain them.
+
+A handful of newer BCL types (`DateOnly`/`TimeOnly`) aren't classified as scalar-like by
+`TypeClassification.IsSimple` when FluxMapper.Core itself is consumed via its netstandard2.0 build,
+since those types don't exist in netstandard2.0's reference assemblies -- they fall through to ordinary
+object mapping there instead. Consuming the net10.0 build (i.e. your own app also targets net10.0)
+classifies them normally.
+
+See `benchmarks/FluxMapper.Benchmarks` for a runnable comparison of both FluxMapper execution tiers
+against hand-written mapping, AutoMapper, and Mapster (`dotnet run -c Release --project
+benchmarks/FluxMapper.Benchmarks`).
+
 ---
 
 Found a gap in this document, or a real-world pattern it doesn't cover? Open an issue on

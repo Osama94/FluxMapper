@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using FluxMapper.Abstractions;
 using FluxMapper.Core.Configuration;
 using FluxMapper.Core.Explain;
+using FluxMapper.Core.Internal;
 
 namespace FluxMapper.Core.Execution;
 
@@ -32,7 +33,7 @@ public sealed class Mapper(MapperConfiguration configuration, IServiceProvider? 
     [RequiresUnreferencedCode("Mode A/B mapping discovers mapped members via reflection over the source/destination types, which trimming can remove. Use the FluxMapper.SourceGenerator [MapFrom] path for a trim-safe alternative.")]
     public TDestination Map<TDestination>(object source)
     {
-        ArgumentNullException.ThrowIfNull(source);
+        ArgumentGuard.ThrowIfNull(source, nameof(source));
         return Map<object, TDestination>(source);
     }
 
@@ -54,7 +55,7 @@ public sealed class Mapper(MapperConfiguration configuration, IServiceProvider? 
     [RequiresUnreferencedCode("Update-in-place mapping discovers mapped members via reflection over the source/destination types, which trimming can remove.")]
     public TDestination Map<TSource, TDestination>(TSource source, TDestination destination)
     {
-        ArgumentNullException.ThrowIfNull(destination);
+        ArgumentGuard.ThrowIfNull(destination, nameof(destination));
         if (source is null) return destination;
 
         var sourceType = source.GetType();
@@ -70,7 +71,7 @@ public sealed class Mapper(MapperConfiguration configuration, IServiceProvider? 
     [RequiresUnreferencedCode("Mode A/B mapping discovers mapped members via reflection over the source/destination types, which trimming can remove. Use the FluxMapper.SourceGenerator [MapFrom] path for a trim-safe alternative.")]
     public TDestination Map<TSource, TDestination>(TSource source, Action<IMappingOperationOptions<TSource, TDestination>> configureOptions)
     {
-        ArgumentNullException.ThrowIfNull(configureOptions);
+        ArgumentGuard.ThrowIfNull(configureOptions, nameof(configureOptions));
 
         var options = new MappingOperationOptions<TSource, TDestination>();
         configureOptions(options);
@@ -110,7 +111,7 @@ public sealed class Mapper(MapperConfiguration configuration, IServiceProvider? 
     [RequiresUnreferencedCode("Mode A/B mapping discovers mapped members via reflection over the source/destination types, which trimming can remove. Use the FluxMapper.SourceGenerator [MapFrom] path for a trim-safe alternative.")]
     public async Task<TDestination> MapAsync<TSource, TDestination>(TSource source, Func<TSource, TDestination, Task> afterMapAsync)
     {
-        ArgumentNullException.ThrowIfNull(afterMapAsync);
+        ArgumentGuard.ThrowIfNull(afterMapAsync, nameof(afterMapAsync));
 
         var destination = Map<TSource, TDestination>(source);
 

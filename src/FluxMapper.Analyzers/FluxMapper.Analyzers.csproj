@@ -38,6 +38,7 @@
     <None Include="$(OutputPath)\$(AssemblyName).dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
     <None Include="..\..\DOCUMENTATION.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\icon.png" Pack="true" PackagePath="\" />
   </ItemGroup>
 
   <!-- Required by the .NET SDK's built-in analyzer-release-tracking check (RS2008) for any project that

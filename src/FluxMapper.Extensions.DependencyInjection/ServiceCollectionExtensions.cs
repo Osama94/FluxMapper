@@ -32,8 +32,8 @@ public static class ServiceCollectionExtensions
         Action<MapperConfigurationExpression> configure,
         ServiceLifetime mapperLifetime = ServiceLifetime.Singleton)
     {
-        ArgumentNullException.ThrowIfNull(services);
-        ArgumentNullException.ThrowIfNull(configure);
+        ArgumentGuard.ThrowIfNull(services, nameof(services));
+        ArgumentGuard.ThrowIfNull(configure, nameof(configure));
 
         var configuration = MapperConfiguration.Create(configure);
         services.AddSingleton(configuration);
@@ -55,8 +55,8 @@ public static class ServiceCollectionExtensions
         MapperConfiguration configuration,
         ServiceLifetime mapperLifetime = ServiceLifetime.Singleton)
     {
-        ArgumentNullException.ThrowIfNull(services);
-        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentGuard.ThrowIfNull(services, nameof(services));
+        ArgumentGuard.ThrowIfNull(configuration, nameof(configuration));
 
         services.AddSingleton(configuration);
         services.Add(new ServiceDescriptor(

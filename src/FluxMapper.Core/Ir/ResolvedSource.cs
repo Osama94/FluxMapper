@@ -15,7 +15,7 @@ public abstract record ResolvedSource
     /// <summary>A chain of member accesses, e.g. User -&gt; Address -&gt; City -&gt; Name.</summary>
     public sealed record MemberChain(IReadOnlyList<MemberInfo> Members) : ResolvedSource
     {
-        public Type ValueType => MemberValueTypeHelper.GetMemberType(Members[^1]);
+        public Type ValueType => MemberValueTypeHelper.GetMemberType(Members[Members.Count - 1]);
 
         public string PathText => string.Join('.', Members.Select(m => m.Name));
     }

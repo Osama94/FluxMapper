@@ -5,7 +5,7 @@ adaptive execution engine that picks the fastest safe strategy available — a c
 generator when it can, a cached compiled-expression tier when it can't, and real `IQueryable` projection
 (`ProjectTo<T>`) for EF Core and friends — instead of committing to reflection or expression trees alone.
 
-> **Status: v1.1.1.** The API surface and execution engine are implemented and
+> **Status: v1.2.0.** The API surface and execution engine are implemented and
 > covered by an xunit test suite (93 tests), including a real `Microsoft.EntityFrameworkCore.InMemory`
 > projection test and a real Native AOT publish smoke test. See "What's implemented" below.
 
@@ -196,6 +196,27 @@ A single-hop selector (`d => d.City`) doesn't need `ForPath` at all — use `.Ma
 | `FluxMapper.SourceGenerator` | Roslyn (build-time only) | `[MapFrom]` incremental generator. |
 | `FluxMapper.Analyzers` | Roslyn (build-time only) | `[MapFrom]` diagnostics. |
 | `FluxMapper.Extensions.DependencyInjection` | `FluxMapper.Core` | `AddFluxMapper` for `IServiceCollection`. |
+
+`FluxMapper`, `FluxMapper.Abstractions`, `FluxMapper.Core`, and `FluxMapper.Extensions.DependencyInjection`
+all multi-target `netstandard2.0` and `net10.0` — .NET Framework 4.6.1+, .NET Core 2.0+, Mono, Xamarin, and
+every actively supported .NET version can all reference them, not just net10.0. `FluxMapper.SourceGenerator`
+and `FluxMapper.Analyzers` are Roslyn components and always target `netstandard2.0` regardless of your
+app's own target framework, since they run inside the compiler/IDE host rather than your app.
+
+## Benchmarks
+
+`benchmarks/FluxMapper.Benchmarks` is a runnable, Stopwatch-based comparison of hand-written mapping,
+both of FluxMapper's execution tiers, AutoMapper (pinned to 14.0.0, its last MIT-licensed release), and
+Mapster (default runtime mode), on a flat and a nested+collection scenario:
+
+```
+dotnet run -c Release --project benchmarks/FluxMapper.Benchmarks
+```
+
+Run it yourself rather than taking any mapper's marketing numbers, FluxMapper's own included, at face
+value — results depend on your hardware, .NET version, and shape of data. See
+[`COMPETITIVE_GAP_ANALYSIS.md`](COMPETITIVE_GAP_ANALYSIS.md) for the fuller competitive positioning this
+benchmark is part of.
 
 ## Installation
 

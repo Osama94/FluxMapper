@@ -1,5 +1,6 @@
 using System.Reflection;
 using FluxMapper.Core.Conventions;
+using FluxMapper.Core.Internal;
 
 namespace FluxMapper.Core.Configuration;
 
@@ -46,7 +47,7 @@ public sealed class MapperConfigurationExpression : ITypeMapConfigurationProvide
     /// </summary>
     public MapperConfigurationExpression AddProfile(Profile profile)
     {
-        ArgumentNullException.ThrowIfNull(profile);
+        ArgumentGuard.ThrowIfNull(profile, nameof(profile));
         foreach (var config in profile.RegisteredMaps)
         {
             _configs[(config.SourceType, config.DestinationType)] = config;
@@ -68,7 +69,7 @@ public sealed class MapperConfigurationExpression : ITypeMapConfigurationProvide
     /// <summary>Scans each of <paramref name="assemblies"/> for <see cref="Profile"/> types and merges them in.</summary>
     public MapperConfigurationExpression AddMaps(params Assembly[] assemblies)
     {
-        ArgumentNullException.ThrowIfNull(assemblies);
+        ArgumentGuard.ThrowIfNull(assemblies, nameof(assemblies));
         foreach (var assembly in assemblies)
         {
             foreach (var type in assembly.GetTypes())

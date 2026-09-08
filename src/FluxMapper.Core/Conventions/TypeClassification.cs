@@ -9,7 +9,14 @@ public static class TypeClassification
     private static readonly HashSet<Type> SimpleTypes =
     [
         typeof(string), typeof(decimal), typeof(DateTime), typeof(DateTimeOffset),
-        typeof(TimeSpan), typeof(Guid), typeof(Uri), typeof(DateOnly), typeof(TimeOnly),
+        typeof(TimeSpan), typeof(Guid), typeof(Uri),
+#if NET6_0_OR_GREATER
+        // DateOnly/TimeOnly don't exist in netstandard2.0's reference assemblies -- this assembly's
+        // netstandard2.0 build simply doesn't special-case them as scalar-like (they fall through to
+        // ordinary object mapping instead), while the net10.0 build classifies them same as any other
+        // BCL value type here.
+        typeof(DateOnly), typeof(TimeOnly),
+#endif
     ];
 
     public static bool IsSimple(Type type)

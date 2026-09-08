@@ -13,6 +13,18 @@
                        OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
+  <!--
+    AutoMapper is pinned to 14.0.0 deliberately: the last version released under AutoMapper's original
+    MIT license before the commercial-licensing change in 15.0.0. Benchmarking against it here is not
+    "production use" of AutoMapper by any reasonable reading, but pinning to the last unambiguously free
+    version avoids any question about it, and it is also the version realistically still running in most
+    free-tier codebases that have not paid to upgrade.
+  -->
+  <ItemGroup>
+    <PackageReference Include="AutoMapper" Version="14.0.0" />
+    <PackageReference Include="Mapster" Version="10.0.12" />
+  </ItemGroup>
+
   <ItemGroup>
     <Compile Remove="Generated/**/*.cs" />
   </ItemGroup>

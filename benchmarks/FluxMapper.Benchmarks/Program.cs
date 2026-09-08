@@ -9,6 +9,8 @@ using System.Diagnostics;
 using System.Reflection;
 using FluxMapper.Benchmarks;
 using FluxMapper.Core.Configuration;
+using Mapster;
+using AutoMapperConfiguration = AutoMapper.MapperConfiguration;
 
 #if DEBUG
 Console.WriteLine("*** DEBUG build -- these numbers are not meaningful. Re-run with `dotnet run -c Release`. ***");
@@ -87,11 +89,19 @@ Console.WriteLine(new string('-', 100));
     var mapper = config.CreateMapper();
     mapper.Map<BenchOrderDto>(order); // force delegate compilation before timing starts
 
+    var autoMapperConfig = new AutoMapperConfiguration(cfg => cfg.CreateMap<BenchOrder, BenchOrderDto>());
+    var autoMapper = autoMapperConfig.CreateMapper();
+    autoMapper.Map<BenchOrderDto>(order);
+
+    order.Adapt<BenchOrderDto>(); // Mapster warm-up: its first Adapt<> call for a type pair also compiles and caches a delegate
+
     BenchOrderDto ManualMap(BenchOrder o) => new() { Id = o.Id, Total = o.Total, CreatedAt = o.CreatedAt, Customer = o.Customer };
 
     Bench("Manual hand-written mapping", Warmup, Iterations, () => { _ = ManualMap(order); });
     Bench("FluxMapper: compiled-expression tier", Warmup, Iterations, () => { _ = mapper.Map<BenchOrderDto>(order); });
     Bench("FluxMapper: source-generated tier (AOT-safe)", Warmup, Iterations, () => { _ = BenchOrderGeneratedDto.MapFrom(order); });
+    Bench("AutoMapper 14.0.0 (last MIT version)", Warmup, Iterations, () => { _ = autoMapper.Map<BenchOrderDto>(order); });
+    Bench("Mapster (default runtime mode)", Warmup, Iterations, () => { _ = order.Adapt<BenchOrderDto>(); });
     Bench("Naive reflection (worst-case baseline)", Warmup / 10, Iterations / 10, () => { _ = ReflectionMap<BenchOrderDto>(order); });
 }
 
@@ -126,6 +136,17 @@ Console.WriteLine(new string('-', 100));
     var mapper = config.CreateMapper();
     mapper.Map<BenchUserDto>(user);
 
+    var autoMapperConfig = new AutoMapperConfiguration(cfg =>
+    {
+        cfg.CreateMap<BenchAddress, BenchAddressDto>();
+        cfg.CreateMap<BenchOrder, BenchOrderDto>();
+        cfg.CreateMap<BenchUser, BenchUserDto>();
+    });
+    var autoMapper = autoMapperConfig.CreateMapper();
+    autoMapper.Map<BenchUserDto>(user);
+
+    user.Adapt<BenchUserDto>(); // Mapster warm-up, same reason as scenario 1
+
     BenchUserDto ManualMap(BenchUser u) => new()
     {
         Id = u.Id,
@@ -136,6 +157,8 @@ Console.WriteLine(new string('-', 100));
 
     Bench("Manual hand-written mapping", Warmup, Iterations, () => { _ = ManualMap(user); });
     Bench("FluxMapper: compiled-expression tier", Warmup, Iterations, () => { _ = mapper.Map<BenchUserDto>(user); });
+    Bench("AutoMapper 14.0.0 (last MIT version)", Warmup, Iterations, () => { _ = autoMapper.Map<BenchUserDto>(user); });
+    Bench("Mapster (default runtime mode)", Warmup, Iterations, () => { _ = user.Adapt<BenchUserDto>(); });
     Bench("Naive reflection (worst-case baseline)", Warmup / 10, Iterations / 10, () => { _ = ReflectionMap<BenchUserDto>(user); });
 }
 
@@ -144,3 +167,7 @@ Console.WriteLine("Interpretation: the compiled-expression tier pays a one-time 
 Console.WriteLine("(source,destination) type pair (paid once above, before timing starts, mirroring real usage --");
 Console.WriteLine("a long-lived Mapper/IMapper compiles each pair at most once) and is then a plain delegate call,");
 Console.WriteLine("so its steady-state cost should sit close to hand-written code and far below per-call reflection.");
+Console.WriteLine();
+Console.WriteLine("AutoMapper (14.0.0, its last MIT-licensed release) and Mapster (default runtime mode, no");
+Console.WriteLine("Mapster.Tool codegen) are included as the two most commonly reached-for alternatives -- see");
+Console.WriteLine("COMPETITIVE_GAP_ANALYSIS.md for why an independent, runnable comparison mattered enough to add.");

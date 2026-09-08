@@ -403,7 +403,7 @@ public sealed class MappingPlanBuilder(ITypeMapConfigurationProvider configProvi
     {
         var sourceNullable = source switch
         {
-            ResolvedSource.MemberChain mc => NullabilityAnalysis.IsNullable(mc.Members[^1]),
+            ResolvedSource.MemberChain mc => NullabilityAnalysis.IsNullable(mc.Members[mc.Members.Count - 1]),
             ResolvedSource.MethodCall m => NullabilityAnalysis.IsNullable(m.Method),
             ResolvedSource.ConstantOrDefault c => c.Value is null,
             _ => false,
