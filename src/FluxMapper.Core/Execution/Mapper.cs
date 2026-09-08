@@ -45,8 +45,21 @@ public sealed class Mapper(MapperConfiguration configuration, IServiceProvider? 
 
         var sourceType = source.GetType();
         var destinationType = typeof(TDestination);
-        var del = _constructCache.GetOrAdd((sourceType, destinationType),
-            key => CompiledMapperFactory.BuildConstructDelegate(configuration.GetPlan(key.Item1, key.Item2), services));
+        var key = (sourceType, destinationType);
+
+        // TryGetValue first, and build-then-GetOrAdd(TKey,TValue) rather than GetOrAdd's Func<TKey,TValue>
+        // factory overload, on a miss: that factory overload's factory closes over `this` (it reads
+        // `configuration`/`services`), so passing one on every call would allocate a fresh delegate on this
+        // hot path even when the value is already cached and the factory is never actually invoked -- a
+        // real, measured cost on a call this hot, not a theoretical one. Building the delegate eagerly
+        // before the atomic insert means a concurrent miss on the same key can build it twice (same as the
+        // factory overload could invoke its factory more than once); whichever result lands first in the
+        // dictionary wins, and the delegates are functionally equivalent either way, so the only cost of
+        // that race is a discarded duplicate build, not a correctness issue.
+        if (!_constructCache.TryGetValue(key, out var del))
+        {
+            del = _constructCache.GetOrAdd(key, CompiledMapperFactory.BuildConstructDelegate(configuration.GetPlan(sourceType, destinationType), services));
+        }
 
         return (TDestination)del(source)!;
     }
@@ -60,8 +73,14 @@ public sealed class Mapper(MapperConfiguration configuration, IServiceProvider? 
 
         var sourceType = source.GetType();
         var destinationType = typeof(TDestination);
-        var del = _updateCache.GetOrAdd((sourceType, destinationType),
-            key => CompiledMapperFactory.BuildUpdateDelegate(configuration.GetPlan(key.Item1, key.Item2), services));
+        var key = (sourceType, destinationType);
+
+        // Same TryGetValue-first, build-then-GetOrAdd(TKey,TValue) shape as Map<TSource,TDestination> above,
+        // and for the same reason -- see that method's comment.
+        if (!_updateCache.TryGetValue(key, out var del))
+        {
+            del = _updateCache.GetOrAdd(key, CompiledMapperFactory.BuildUpdateDelegate(configuration.GetPlan(sourceType, destinationType), services));
+        }
 
         del(source, destination);
         return destination;

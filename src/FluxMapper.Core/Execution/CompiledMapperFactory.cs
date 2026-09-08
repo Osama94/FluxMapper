@@ -588,7 +588,22 @@ public static class CompiledMapperFactory
 
         Expression BuildFrom(Expression typedRoot)
         {
-            var sequence = TryGetIndexedAccessors(typedRoot, sourceElementType, out var count, out var itemAt)
+            var isIndexed = TryGetIndexedAccessors(typedRoot, sourceElementType, out var count, out var itemAt);
+
+            // A List<T> destination built from an indexable source used to go through BuildIndexedLoop
+            // (array) followed by MaterializeCollection wrapping that array in `new List<T>(array)` --
+            // correct, but a full second allocation-and-copy on top of the array already built, since that
+            // constructor sizes its own backing array to Count and CopyTo's into it rather than adopting
+            // the array it was given. Building directly into the List<T> here instead (BuildIndexedLoopIntoList)
+            // skips the intermediate array entirely -- one allocation (the list's own backing array, sized
+            // once via its capacity constructor) instead of two.
+            if (isIndexed && collectionPlan.TargetKind == CollectionTargetKind.List)
+            {
+                var list = BuildIndexedLoopIntoList(count, itemAt, destinationElementType, collectionPlan, refContext, services);
+                return destinationType.IsAssignableFrom(list.Type) ? list : Expression.Convert(list, destinationType);
+            }
+
+            var sequence = isIndexed
                 ? BuildIndexedLoop(count, itemAt, destinationElementType, collectionPlan, refContext, services)
                 : BuildEnumeratorLoop(typedRoot, sourceElementType, destinationElementType, collectionPlan, refContext, services);
 
@@ -709,6 +724,48 @@ public static class CompiledMapperFactory
     }
 
     /// <summary>
+    /// Same indexed-source shape as <see cref="BuildIndexedLoop"/>, but for a <see cref="CollectionTargetKind.List"/>
+    /// destination specifically: builds directly into a <see cref="List{T}"/> pre-sized via its capacity
+    /// constructor, writing each element with <c>Add</c>, instead of building an array and handing it to
+    /// <see cref="MaterializeCollection"/> to wrap in a *second* <see cref="List{T}"/> via the
+    /// <c>List{T}(IEnumerable{T})</c> constructor -- which, given an array, still allocates its own backing
+    /// array sized to <c>Count</c> and copies into it, a full second allocation on top of the array already
+    /// built. This skips that: one allocation (the list's own backing array) instead of two.
+    /// </summary>
+    private static Expression BuildIndexedLoopIntoList(Expression count, Func<Expression, Expression> itemAt, Type destinationElementType, CollectionPlan collectionPlan, Expression? refContext, IServiceProvider? services)
+    {
+        var listType = typeof(List<>).MakeGenericType(destinationElementType);
+        var countVar = Expression.Variable(typeof(int), "count");
+        var indexVar = Expression.Variable(typeof(int), "i");
+        var listVar = Expression.Variable(listType, "destList");
+        var breakLabel = Expression.Label("collectionLoopBreak");
+
+        var elementSource = itemAt(indexVar);
+        var elementValue = collectionPlan.ElementPlan is not null
+            ? BuildCachedComplexValue(collectionPlan.ElementPlan, elementSource, destinationElementType, refContext, services)
+            : Expression.Convert(elementSource, destinationElementType);
+
+        var addMethod = listType.GetMethod(nameof(List<object>.Add))!;
+
+        var loopBody = Expression.IfThenElse(
+            Expression.LessThan(indexVar, countVar),
+            Expression.Block(
+                typeof(void),
+                Expression.Call(listVar, addMethod, elementValue),
+                Expression.Assign(indexVar, Expression.Add(indexVar, Expression.Constant(1)))),
+            Expression.Break(breakLabel));
+
+        return Expression.Block(
+            listType,
+            [countVar, indexVar, listVar],
+            Expression.Assign(countVar, count),
+            Expression.Assign(listVar, Expression.New(listType.GetConstructor([typeof(int)])!, countVar)),
+            Expression.Assign(indexVar, Expression.Constant(0)),
+            Expression.Loop(loopBody, breakLabel),
+            listVar);
+    }
+
+    /// <summary>
     /// Fallback for a source with no known count/indexer: the same <c>GetEnumerator()</c>/<c>MoveNext()</c>/
     /// <c>Current</c>/<c>try</c>-<c>finally</c>-<c>Dispose()</c> shape the C# compiler emits for
     /// <c>foreach</c>, appending each mapped element onto a destination <see cref="List{T}"/> (pre-sized from
@@ -800,12 +857,13 @@ public static class CompiledMapperFactory
                 FindEnumerableExtensionMethod(typeof(System.Collections.Immutable.ImmutableHashSet), "ToImmutableHashSet")
                     .MakeGenericMethod(destinationElementType), sequence),
 
-            _ => isArraySequence
-                ? Expression.New(
-                    typeof(List<>).MakeGenericType(destinationElementType)
-                        .GetConstructor([typeof(IEnumerable<>).MakeGenericType(destinationElementType)])!,
-                    sequence)
-                : sequence,
+            // List (reached here only via a non-indexed source -- an indexed source headed for a List<T>
+            // destination is intercepted earlier in BuildFrom by BuildIndexedLoopIntoList, before ever
+            // building an array to wrap) and Enumerable both land here, and both are already satisfied by
+            // whatever BuildIndexedLoop/BuildEnumeratorLoop produced without any further copy: an array
+            // (from the indexed loop) implements IEnumerable<T> directly, and a List<T> (from the
+            // enumerator loop, which always builds one) satisfies both kinds as-is.
+            _ => sequence,
         };
     }
 
