@@ -69,7 +69,7 @@ namespace System.Collections.Generic
 {
     /// <summary>
     /// Polyfill for the real netstandard2.1+/.NET Core 2.1+ BCL type of the same name, needed by
-    /// <see cref="ResolutionContext"/>'s reference-identity map (see Resolvers.cs) for
+    /// <c>ResolutionContext</c>'s reference-identity map (see Resolvers.cs) for
     /// <c>PreserveReferences</c>'s cycle/shared-reference tracking. <c>internal</c> is enough: it's only
     /// used within this same assembly, unlike the two attribute polyfills above.
     /// </summary>
@@ -81,9 +81,15 @@ namespace System.Collections.Generic
 
         public static ReferenceEqualityComparer Instance { get; } = new();
 
-        public bool Equals(object? x, object? y) => ReferenceEquals(x, y);
+        // Explicit interface implementations, not plain public instance members: System.Object
+        // declares a *static* Equals(object, object) with this exact same name and parameter list, and a
+        // public instance member here would hide it (CS0108) rather than genuinely override anything --
+        // explicit implementation sidesteps that entirely while still satisfying every call made through
+        // the IEqualityComparer<object?> interface (which is the only way this type is ever invoked, via
+        // the Dictionary constructor above).
+        bool IEqualityComparer<object?>.Equals(object? x, object? y) => ReferenceEquals(x, y);
 
-        public int GetHashCode(object? obj) => obj is null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
+        int IEqualityComparer<object?>.GetHashCode(object? obj) => obj is null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
     }
 }
 
