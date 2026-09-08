@@ -30,6 +30,58 @@ namespace System.Collections.Generic
             value = pair.Value;
         }
     }
+
+    /// <summary>
+    /// Polyfill for the real netstandard2.1+/.NET Core 2.1+ <c>CollectionExtensions.GetValueOrDefault</c>
+    /// methods, used throughout FluxMapper.Core's config/plan lookups (e.g.
+    /// <c>MapperConfigurationExpression.Get</c>, <c>MappingPlanBuilder</c>'s self-reference-depth stack).
+    /// </summary>
+    internal static class DictionaryPolyfillExtensions
+    {
+        public static TValue? GetValueOrDefault<TKey, TValue>(this IReadOnlyDictionary<TKey, TValue> dictionary, TKey key)
+            => dictionary.TryGetValue(key, out var value) ? value : default;
+
+        public static TValue GetValueOrDefault<TKey, TValue>(this IReadOnlyDictionary<TKey, TValue> dictionary, TKey key, TValue defaultValue)
+            => dictionary.TryGetValue(key, out var value) ? value : defaultValue;
+    }
+}
+
+namespace System
+{
+    /// <summary>
+    /// Polyfill for the real netstandard2.1+/.NET Core 2.0+ 3-argument <c>string.Replace(string, string,
+    /// StringComparison)</c> overload, used by <c>NamingConvention.Normalize</c>'s case-insensitive
+    /// substring replacement. An extension method with this exact name/signature is picked up by ordinary
+    /// overload resolution wherever the real instance method doesn't exist -- the call site
+    /// (<c>name.Replace(from, to, StringComparison.OrdinalIgnoreCase)</c>) needs no change at all on
+    /// either target framework.
+    /// </summary>
+    internal static class StringPolyfillExtensions
+    {
+        public static string Replace(this string str, string oldValue, string? newValue, StringComparison comparisonType)
+        {
+            newValue ??= string.Empty;
+            if (oldValue.Length == 0) return str;
+
+            var result = new System.Text.StringBuilder();
+            var index = 0;
+            while (true)
+            {
+                var found = str.IndexOf(oldValue, index, comparisonType);
+                if (found < 0)
+                {
+                    result.Append(str, index, str.Length - index);
+                    break;
+                }
+
+                result.Append(str, index, found - index);
+                result.Append(newValue);
+                index = found + oldValue.Length;
+            }
+
+            return result.ToString();
+        }
+    }
 }
 
 #endif

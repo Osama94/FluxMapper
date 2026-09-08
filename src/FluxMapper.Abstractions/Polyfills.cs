@@ -70,10 +70,11 @@ namespace System.Collections.Generic
     /// <summary>
     /// Polyfill for the real netstandard2.1+/.NET Core 2.1+ BCL type of the same name, needed by
     /// <c>ResolutionContext</c>'s reference-identity map (see Resolvers.cs) for
-    /// <c>PreserveReferences</c>'s cycle/shared-reference tracking. <c>internal</c> is enough: it's only
-    /// used within this same assembly, unlike the two attribute polyfills above.
+    /// <c>PreserveReferences</c>'s cycle/shared-reference tracking. <c>public</c> -- like the two
+    /// attribute polyfills above -- because FluxMapper.Core also uses it directly (ProjectionValidator,
+    /// MapperConfiguration, CompiledMapperFactory), not just this assembly.
     /// </summary>
-    internal sealed class ReferenceEqualityComparer : IEqualityComparer<object?>
+    public sealed class ReferenceEqualityComparer : IEqualityComparer<object?>
     {
         private ReferenceEqualityComparer()
         {

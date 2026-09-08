@@ -17,7 +17,7 @@ public abstract record ResolvedSource
     {
         public Type ValueType => MemberValueTypeHelper.GetMemberType(Members[Members.Count - 1]);
 
-        public string PathText => string.Join('.', Members.Select(m => m.Name));
+        public string PathText => string.Join(".", Members.Select(m => m.Name));
     }
 
     /// <summary>A zero-argument method call, e.g. <c>GetName()</c>.</summary>

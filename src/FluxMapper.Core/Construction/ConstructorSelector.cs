@@ -17,7 +17,7 @@ public static class ConstructorSelector
 {
     public static (ConstructorPlan? Plan, PlanDiagnostic? Diagnostic) Select(Type destinationType, Type sourceType, NamingConvention naming)
     {
-        var parameterless = destinationType.GetConstructor(BindingFlags.Public | BindingFlags.Instance, Type.EmptyTypes);
+        var parameterless = destinationType.GetConstructor(BindingFlags.Public | BindingFlags.Instance, null, Type.EmptyTypes, null);
         if (parameterless is not null)
         {
             return (new ConstructorPlan(parameterless, []), null);

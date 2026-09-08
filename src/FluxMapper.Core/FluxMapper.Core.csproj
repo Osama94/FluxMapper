@@ -4,6 +4,17 @@
     <ProjectReference Include="..\FluxMapper.Abstractions\FluxMapper.Abstractions.csproj" />
   </ItemGroup>
 
+  <!--
+    System.Collections.Immutable ships in-box as part of the net10.0 shared framework, but is not part of
+    netstandard2.0's reference assemblies at all: that leg needs the real NuGet package for
+    ImmutableArray/ImmutableList/ImmutableHashSet/ImmutableDictionary support (see MappingPlanBuilder.cs
+    and CompiledMapperFactory.cs). Conditioned to netstandard2.0 only so the net10.0 build doesn't carry a
+    redundant explicit reference to something it already has for free.
+  -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="System.Collections.Immutable" Version="9.0.0" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFrameworks>netstandard2.0;net10.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>

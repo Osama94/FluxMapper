@@ -36,7 +36,7 @@ public sealed class NamingConvention
         {
             if (name.StartsWith(prefix, StringComparison.Ordinal))
             {
-                name = name[prefix.Length..];
+                name = name.Substring(prefix.Length);
                 break;
             }
         }

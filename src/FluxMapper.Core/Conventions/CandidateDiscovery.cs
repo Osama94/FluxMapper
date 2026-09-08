@@ -49,7 +49,7 @@ public static class CandidateDiscovery
             if (method.DeclaringType == typeof(object)) continue;
 
             var candidateName = method.Name.StartsWith("Get", StringComparison.Ordinal) && method.Name.Length > 3
-                ? method.Name[3..]
+                ? method.Name.Substring(3)
                 : method.Name;
 
             if (naming.NamesMatch(candidateName, destinationName))
@@ -69,7 +69,7 @@ public static class CandidateDiscovery
             {
                 results.Add(new CandidateSource(
                     new ResolvedSource.MemberChain(chain), CandidateSource.Flattening,
-                    string.Join('.', chain.Select(m => m.Name))));
+                    string.Join(".", chain.Select(m => m.Name))));
             }
         }
 
@@ -88,7 +88,7 @@ public static class CandidateDiscovery
             if (!remainingName.StartsWith(normalizedMemberName, StringComparison.OrdinalIgnoreCase))
                 continue;
 
-            var remainder = remainingName[normalizedMemberName.Length..];
+            var remainder = remainingName.Substring(normalizedMemberName.Length);
             var memberType = MemberValueTypeHelper.GetMemberType(member);
 
             if (remainder.Length == 0)

@@ -11,7 +11,7 @@ namespace FluxMapper.Core.Internal;
 internal static class ArgumentGuard
 {
     /// <summary>
-    /// <paramref name="argument"/> is <see cref="NotNullAttribute"/>-annotated so that, exactly like the
+    /// <paramref name="argument"/> is <c>NotNullAttribute</c>-annotated so that, exactly like the
     /// real <c>ArgumentNullException.ThrowIfNull</c>, nullable flow analysis treats it as non-null in the
     /// caller's code after a call that didn't throw -- without this, every call site would need its own
     /// null-forgiving <c>!</c> or trigger a spurious CS8604 downstream.
