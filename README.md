@@ -214,8 +214,44 @@ dotnet run -c Release --project benchmarks/FluxMapper.Benchmarks
 ```
 
 Run it yourself rather than taking any mapper's marketing numbers, FluxMapper's own included, at face
-value — results depend on your hardware, .NET version, and shape of data. See
-[`COMPETITIVE_GAP_ANALYSIS.md`](COMPETITIVE_GAP_ANALYSIS.md) for the fuller competitive positioning this
+value — results depend on your hardware, .NET version, and shape of data. The numbers below are one
+measured run, Release build, kept here so there's a real result to react to instead of no result at all.
+
+**Scenario 1 — flat mapping** (`BenchOrder` → `BenchOrderDto`, 4 scalar members):
+
+| Mapper | ns/op | ops/sec |
+|---|---:|---:|
+| Manual hand-written mapping | 37.6 | 26,588,815 |
+| FluxMapper — source-generated tier (AOT-safe) | 43.0 | 23,255,922 |
+| FluxMapper — compiled-expression tier | 169.8 | 5,890,836 |
+| Mapster (default runtime mode) | 278.8 | 3,586,654 |
+| AutoMapper 14.0.0 (last MIT version) | 480.6 | 2,080,610 |
+| Naive reflection (worst-case baseline) | 2530.6 | 395,156 |
+
+On a flat shape, FluxMapper wins outright: the source-generated tier (43.0 ns) is within touching distance
+of hand-written code and beats both competitors, and even the compiled-expression tier beats both
+AutoMapper and Mapster.
+
+**Scenario 2 — nested + collection mapping** (`BenchUser` → `BenchUserDto`, 1 nested object + a
+3-element list):
+
+| Mapper | ns/op | ops/sec |
+|---|---:|---:|
+| Mapster (default runtime mode) | 330.9 | 3,022,240 |
+| AutoMapper 14.0.0 (last MIT version) | 461.1 | 2,168,615 |
+| Manual hand-written mapping | 786.7 | 1,271,151 |
+| FluxMapper — compiled-expression tier | 1954.4 | 511,667 |
+| Naive reflection (worst-case baseline) | 8816.8 | 113,420 |
+
+This one doesn't flatter FluxMapper, and it's reported here anyway: `[MapFrom]`'s source-generated tier
+doesn't yet cover nested/collection shapes (see the source-generator coverage gap in
+[`COMPETITIVE_GAP_ANALYSIS.md`](COMPETITIVE_GAP_ANALYSIS.md)), so this scenario only exercises the
+compiled-expression tier — and that tier is the slowest of the three real mappers here, behind even the
+hand-written LINQ baseline. That's a genuine, currently-open performance gap in FluxMapper's
+compiled-expression codegen for nested/collection member access, not a benchmark artifact — see
+`COMPETITIVE_GAP_ANALYSIS.md` for it as a tracked follow-up.
+
+See [`COMPETITIVE_GAP_ANALYSIS.md`](COMPETITIVE_GAP_ANALYSIS.md) for the fuller competitive positioning this
 benchmark is part of.
 
 ## Installation

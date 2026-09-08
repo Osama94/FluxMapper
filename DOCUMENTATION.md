@@ -883,7 +883,14 @@ classifies them normally.
 
 See `benchmarks/FluxMapper.Benchmarks` for a runnable comparison of both FluxMapper execution tiers
 against hand-written mapping, AutoMapper, and Mapster (`dotnet run -c Release --project
-benchmarks/FluxMapper.Benchmarks`).
+benchmarks/FluxMapper.Benchmarks`). One measured run: on a flat DTO, FluxMapper's source-generated tier
+(43.0 ns/op) is close to hand-written code (37.6 ns/op) and beats both AutoMapper 14.0.0 (480.6 ns/op) and
+Mapster's default runtime mode (278.8 ns/op) outright. On a nested-object-plus-collection shape, the
+result is the opposite: `[MapFrom]`'s source generator doesn't cover that shape yet, so only the
+compiled-expression tier runs, at 1954.4 ns/op -- slower than AutoMapper (461.1 ns/op), Mapster
+(330.9 ns/op), and even hand-written LINQ (786.7 ns/op). See
+[`COMPETITIVE_GAP_ANALYSIS.md`](COMPETITIVE_GAP_ANALYSIS.md) for the full numbers and the tracked
+follow-up on nested/collection codegen performance.
 
 ---
 
