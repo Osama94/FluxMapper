@@ -425,3 +425,67 @@ public class CompanyWithUnconstructibleDestination
 {
     public UnconstructibleAddress SaudiAddress { get; set; } = null!;
 }
+
+// ---- Naming convention presets: NamingConvention.SnakeCase()/LowerUnderscore() ----------------
+public class SnakeCaseUser
+{
+    public string user_name { get; set; } = "";
+    public int user_age { get; set; }
+}
+
+public class SnakeCaseUserDto
+{
+    public string UserName { get; set; } = "";
+    public int UserAge { get; set; }
+}
+
+// ---- Global type-pair converters: MapperConfigurationExpression.RegisterConverter -------------
+public class Money
+{
+    public decimal Amount { get; set; }
+}
+
+public class Invoice
+{
+    public Money Total { get; set; } = new();
+}
+
+public class InvoiceDto
+{
+    public decimal Total { get; set; }
+}
+
+public sealed class MoneyToDecimalConverter : FluxMapper.Abstractions.IValueConverter<Money, decimal>
+{
+    public static int InvocationCount;
+
+    public decimal Convert(Money source, FluxMapper.Abstractions.ResolutionContext context)
+    {
+        InvocationCount++;
+        return source.Amount;
+    }
+}
+
+// A second, distinct type pair so a type-based RegisterConverter<TSource,TDestination,TConverter>
+// registration can be tested independently of the instance-based one above, and so both tests can run
+// without one converter's registration leaking into the other's assertions.
+public class LegacyStatus
+{
+    public int Code { get; set; }
+}
+
+public sealed class LegacyStatusConverter : FluxMapper.Abstractions.IValueConverter<LegacyStatus, string>
+{
+    public string Convert(LegacyStatus source, FluxMapper.Abstractions.ResolutionContext context)
+        => source.Code switch { 1 => "Active", 0 => "Inactive", _ => "Unknown" };
+}
+
+public class LegacyStatusHolder
+{
+    public LegacyStatus Status { get; set; } = new();
+}
+
+public class LegacyStatusHolderDto
+{
+    public string Status { get; set; } = "";
+}

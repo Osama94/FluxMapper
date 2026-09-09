@@ -36,8 +36,22 @@ public abstract record ResolvedSource
     /// </summary>
     public sealed record ProjectionResolver(Type ResolverType, Type MemberType) : ResolvedSource;
 
-    /// <summary>A registered type-pair converter.</summary>
-    public sealed record ValueConverter(Type ConverterType, Type SourceType, Type DestinationType) : ResolvedSource;
+    /// <summary>
+    /// A registered type-pair converter -- either a per-member <c>ConvertUsing</c>-style override, or one
+    /// synthesized by <see cref="Building.MappingPlanBuilder"/> for a member whose value types exactly
+    /// match a converter registered globally via
+    /// <see cref="Configuration.MapperConfigurationExpression.RegisterConverter{TSource,TDestination}(Abstractions.IValueConverter{TSource,TDestination})"/>.
+    /// <c>InnerSource</c> is the original <c>MemberChain</c>/<c>MethodCall</c> that reads the raw
+    /// <c>SourceType</c>-typed value off the mapped source object -- the converter runs against *that*
+    /// value, not the whole source object -- <c>null</c> only for a hypothetical future producer that
+    /// deliberately wants the whole mapped source object as input instead of one member's value (no
+    /// current producer does; every global-converter member always supplies this).
+    /// <c>Instance</c> carries a pre-built converter instance when one was registered directly (the global
+    /// instance-based overload); null means "resolve <c>ConverterType</c> via DI, falling back to its own
+    /// constructor" at execution time (see <see cref="Execution.CompiledMapperFactory"/>'s
+    /// <c>ResolveInstance</c>), which is always the case for a converter registered by type.
+    /// </summary>
+    public sealed record ValueConverter(Type ConverterType, Type SourceType, Type DestinationType, ResolvedSource? InnerSource = null, object? Instance = null) : ResolvedSource;
 
     /// <summary>
     /// An inline runtime resolver function supplied directly at configuration time via

@@ -11,6 +11,31 @@ public sealed class NamingConvention
 
     public static NamingConvention Default { get; } = new();
 
+    /// <summary>
+    /// Ready-made preset for a source whose members are <c>snake_case</c> (e.g. <c>user_name</c>) mapping
+    /// to a destination with ordinary PascalCase members (<c>UserName</c>) -- the common "our DTOs are
+    /// PascalCase, the wire format/legacy schema is snake_case" case. Equivalent to
+    /// <c>new NamingConvention().Replace("_")</c>: <see cref="NamesMatch"/> is already
+    /// case-insensitive, so stripping underscores from one side is sufficient (<c>user_name</c> normalizes
+    /// to <c>username</c>, which matches <c>UserName</c> case-insensitively) -- no need to also touch
+    /// casing. Returns a fresh instance on every call; do not share one across configurations you intend
+    /// to customize differently; each returned instance is independent (see <see cref="RecognizePrefix"/>'s
+    /// remarks below on why that matters).
+    /// </summary>
+    public static NamingConvention SnakeCase() => new NamingConvention().Replace("_");
+
+    /// <summary>Alias for <see cref="SnakeCase"/>, matching AutoMapper's <c>LowerUnderscoreNamingConvention</c>
+    /// name for anyone migrating and searching for the familiar term.</summary>
+    public static NamingConvention LowerUnderscore() => SnakeCase();
+
+    /// <remarks>
+    /// <see cref="RecognizePrefix"/> and <see cref="Replace"/> both mutate this instance in place and
+    /// return <c>this</c> -- despite this class's own summary calling it "Immutable," it is not
+    /// copy-on-write. Chaining calls on a fresh <c>new NamingConvention()</c> (or on what
+    /// <see cref="SnakeCase"/>/<see cref="LowerUnderscore"/> return) is safe; chaining further calls onto
+    /// the shared <see cref="Default"/> singleton would mutate it for every other caller in the process and
+    /// must never be done.
+    /// </remarks>
     public NamingConvention RecognizePrefix(string prefix)
     {
         _prefixes.Add(prefix);

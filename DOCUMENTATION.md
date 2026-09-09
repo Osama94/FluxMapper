@@ -27,6 +27,7 @@ they do and *how* to use every feature, including the ones that only come up in 
    - [`PreserveReferences` — cycles and shared references](#preservereferences--cycles-and-shared-references)
    - [`Profile`, `AddProfile`, `AddMaps`](#profile-addprofile-addmaps)
    - [Naming conventions](#naming-conventions)
+   - [Global type-pair converters (`RegisterConverter`)](#global-type-pair-converters-registerconverter)
 5. [Running a mapping](#running-a-mapping)
    - [`Map<TDestination>(source)` and `Map<TSource,TDestination>(source)`](#maptdestinationsource-and-maptsourcetdestinationsource)
    - [Update-in-place: `Map(source, destination)`](#update-in-place-mapsource-destination)
@@ -491,7 +492,7 @@ overwritten by the profile's version when both are present.
 ```csharp
 var config = MapperConfiguration.Create(cfg =>
 {
-    cfg.UseNamingConvention(NamingConvention.Default
+    cfg.UseNamingConvention(new NamingConvention()
         .RecognizePrefix("m_")
         .Replace("_", ""));
     cfg.CreateMap<Source, Destination>();
@@ -504,6 +505,52 @@ registered *after* the naming convention is configured — set it before your `C
 conventions affect exact-vs-convention candidate scoring (an exact match still outranks a
 naming-convention match) and are the same normalization used by flattening's member-name decomposition,
 so both agree on "what a name means."
+
+Build on `new NamingConvention()`, never `NamingConvention.Default` — `RecognizePrefix`/`Replace` mutate
+the instance they're called on and return it (not copy-on-write), so chaining calls onto the shared
+`Default` singleton mutates it for every other map in the process that also falls back to `Default`, not
+just the one you're configuring.
+
+**Ready-made presets** for the common "our DTOs are PascalCase, the wire format/legacy schema is
+snake_case" case:
+
+```csharp
+cfg.UseNamingConvention(NamingConvention.SnakeCase()); // user_name <-> UserName
+cfg.UseNamingConvention(NamingConvention.LowerUnderscore()); // alias for SnakeCase(), matching AutoMapper's name
+```
+
+Both return a fresh instance on every call, so it's safe to chain further customization onto what they
+return (e.g. `NamingConvention.SnakeCase().RecognizePrefix("legacy_")`) without touching a shared
+singleton. There's no `KebabCase` preset: a naming convention compares real CLR member names
+(`MemberInfo.Name`), and a C# (or VB/F#) property or field name can never contain a hyphen in the first
+place, so a kebab-case *member-name* convention could never match anything real.
+
+### Global type-pair converters (`RegisterConverter`)
+
+```csharp
+cfg.RegisterConverter(new MoneyToDecimalConverter()); // instance-based, shared across every call
+cfg.RegisterConverter<LegacyStatus, string, LegacyStatusConverter>(); // type-based, DI-resolved per plan build
+
+public class MoneyToDecimalConverter : IValueConverter<Money, decimal>
+{
+    public decimal Convert(Money source, ResolutionContext context) => source.Amount;
+}
+```
+
+AutoMapper's `CreateMap<TSource,TDestination>().ConvertUsing(...)` equivalent, applied globally: once
+registered, `converter` (or `TConverter`, for the type-based overload) is used for *every* member, across
+*every* map, whose resolved source value type is exactly `TSource` and destination value type is exactly
+`TDestination` — no repeating `ResolveUsing` on every member that happens to touch a recurring conversion
+(a custom `Money` type, a string-backed ID, a legacy enum shape). An explicit per-member override
+(`ResolveUsing`/`ProjectUsing`/an explicit `.Map(...)` expression) always takes precedence over this
+default for that one member. The instance-based overload shares one converter instance across every call
+site it applies to; the type-based overload resolves a fresh instance per plan build through the same
+DI-first/Activator-fallback rule every other resolver already uses — prefer it when the converter has
+DI-injected dependencies rather than being safe to share as a single instance forever. Register global
+converters on the top-level `MapperConfigurationExpression`, not inside a `Profile` — `AddProfile` doesn't
+merge a profile's global converters today. Like a per-member converter, a member resolved this way is
+never projection-safe (see [Projection](#projection-projecttot-for-ef-core-and-any-iqueryable)) — a global
+converter runs arbitrary code, which a real `IQueryable` provider cannot translate.
 
 ## Running a mapping
 

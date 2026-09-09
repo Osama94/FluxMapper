@@ -1145,12 +1145,28 @@ public static class CompiledMapperFactory
         var converterInterface = typeof(IValueConverter<,>).MakeGenericType(converter.SourceType, converter.DestinationType);
         var convertMethod = converterInterface.GetMethod(nameof(IValueConverter<object, object>.Convert))!;
 
-        var converterInstance = ResolveInstance(services, converter.ConverterType);
+        // A converter registered globally by instance (MapperConfigurationExpression.RegisterConverter's
+        // instance overload) already has its one shared Instance built -- use it directly rather than
+        // asking ResolveInstance to build a second one from ConverterType. A converter registered by type
+        // (either the type-based global overload, or a per-member ConvertUsing-style registration) carries
+        // no Instance, so this falls through to the same DI-first/Activator-fallback resolution every
+        // other resolver/converter already goes through.
+        var converterInstance = converter.Instance ?? ResolveInstance(services, converter.ConverterType);
+
+        // `sourceRoot` here is the WHOLE mapped source object (e.g. the Invoice), not the one member's
+        // value the converter is actually meant to run against (e.g. Invoice.Total, a Money) -- InnerSource
+        // is the original MemberChain/MethodCall that reads that specific value off `sourceRoot`, and must
+        // be resolved first. Only a hypothetical future producer that never sets InnerSource would fall
+        // back to passing `sourceRoot` itself, unchanged from this method's original behavior.
+        var innerSource = converter.InnerSource;
+        var valueExpr = innerSource is not null
+            ? GetRawSourceExpression(innerSource, sourceRoot)
+            : sourceRoot;
 
         var call = Expression.Call(
             Expression.Constant(converterInstance, converter.ConverterType),
             convertMethod,
-            Expression.Convert(sourceRoot, converter.SourceType),
+            Expression.Convert(valueExpr, converter.SourceType),
             BuildResolutionContextExpression(services));
 
         return Expression.Convert(call, targetType);

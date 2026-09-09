@@ -234,6 +234,22 @@ public sealed class MappingPlanBuilder(ITypeMapConfigurationProvider configProvi
         var destinationValueType = MemberValueTypeHelper.GetMemberType(destinationMember);
         var sourceValueType = GetSourceValueType(source, destinationValueType);
 
+        // A converter registered globally (MapperConfigurationExpression.RegisterConverter) applies
+        // whenever this member's value came from ordinary name-based discovery (a plain member-chain read
+        // or a zero-arg method-call result) and its value types exactly match a registered pair --
+        // deliberately restricted to those two ResolvedSource kinds so an already-deliberate, member-
+        // specific override (ResolveUsing/ProjectUsing/a constant/an explicit non-chain expression) is
+        // never silently replaced by a type-wide default. Reassigning `source` here (rather than adding a
+        // separate branch below) means the existing `ResolvedSource.ValueConverter` handling -- both here
+        // and in CompiledMapperFactory -- picks it up with no duplicated logic.
+        if (source is ResolvedSource.MemberChain or ResolvedSource.MethodCall
+            && configProvider.TryGetGlobalConverter(sourceValueType, destinationValueType, out var globalConverter))
+        {
+            source = new ResolvedSource.ValueConverter(
+                globalConverter.ConverterType, sourceValueType, destinationValueType,
+                InnerSource: source, Instance: globalConverter.Instance);
+        }
+
         MappingPlan? nestedPlan = null;
         CollectionPlan? collectionPlan = null;
         DictionaryPlan? dictionaryPlan = null;

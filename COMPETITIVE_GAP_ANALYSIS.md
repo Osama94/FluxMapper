@@ -131,23 +131,45 @@ reading the actual emitted `MapFromCore` — zero reflection, zero redundant all
 measurement noise on the benchmark machine, not a code defect, and is the one number here still worth
 re-measuring on a quieter machine rather than chasing with more changes.
 
-### 4. No global, reusable type-pair converters — MEDIUM, impact: medium, effort: medium
+### 4. No global, reusable type-pair converters — ADDRESSED (September 2026)
 
 AutoMapper's `CreateMap<string, MyEnum>().ConvertUsing(...)`-style global converter, applied automatically
-wherever that exact type pair shows up across *any* map, has no documented FluxMapper equivalent —
-`ResolveUsing`/`ConstructUsing`/`ProjectUsing` are all per-member or per-map. For a codebase with a
+wherever that exact type pair shows up across *any* map, had no FluxMapper equivalent —
+`ResolveUsing`/`ConstructUsing`/`ProjectUsing` were all per-member or per-map. For a codebase with a
 recurring primitive conversion (a custom `Money` type, a string-backed ID, a legacy enum shape), repeating
-the same resolver on every member that touches it is real, avoidable friction. A `services.AddFluxMapper`-
-or `MapperConfiguration`-level `RegisterConverter<TSource,TDestination>(...)` that the plan builder
-consults automatically would close this.
+the same resolver on every member that touches it was real, avoidable friction.
 
-### 5. No built-in naming-convention presets — MEDIUM, impact: medium, effort: low
+Closed by `MapperConfigurationExpression.RegisterConverter`, with two overloads: an instance-based one
+(`RegisterConverter(IValueConverter<TSource,TDestination> converter)`, one shared instance) and a
+type-based one (`RegisterConverter<TSource,TDestination,TConverter>()`, resolved per plan build through
+the same DI-first/Activator-fallback rule every other resolver already uses). `MappingPlanBuilder` consults
+it for any member whose value came from ordinary name-based discovery (a plain member-chain read or a
+zero-arg method-call result) and whose value types exactly match a registered pair — an explicit
+per-member override always takes precedence for that one member. Implementation note: the IR
+(`ResolvedSource.ValueConverter`) and execution path (`CompiledMapperFactory.BuildConverterCall`) for a
+type-pair converter already existed end to end from an earlier pass, but had no real producer anywhere in
+the fluent API — this was fully wired, unreachable code before `RegisterConverter` gave it one. Not yet
+merged by `AddProfile`: a converter registered inside a `Profile` is not carried over when that profile is
+added to a configuration — register global converters on the top-level configuration for now.
 
-`UseNamingConvention` currently exposes `RecognizePrefix`/`Replace` — general-purpose primitives, but
-lower-level than what AutoMapper and Mapster ship out of the box (ready-made `snake_case`, `kebab-case`,
-`lowerUnderscore` presets for the common "our DTOs are camelCase, the wire format is snake_case" case).
-This is a small, mechanical addition on top of infrastructure that already exists — cheap to ship, and
-removes boilerplate every consumer currently has to write themselves.
+### 5. No built-in naming-convention presets — ADDRESSED (September 2026)
+
+`UseNamingConvention` exposed only `RecognizePrefix`/`Replace` — general-purpose primitives, but
+lower-level than what AutoMapper ships out of the box (a ready-made `LowerUnderscoreNamingConvention` for
+the common "our DTOs are PascalCase, the wire format is snake_case" case).
+
+Closed by `NamingConvention.SnakeCase()` and its alias `NamingConvention.LowerUnderscore()` (matching
+AutoMapper's name for anyone migrating and searching for it), both returning a fresh instance so further
+chaining never risks mutating a shared one. `KebabCase` was considered and deliberately dropped: a naming
+convention compares real CLR member names, and a C# (or VB/F#) member name can never contain a hyphen in
+the first place, so a kebab-case *member-name* preset could never match anything real — shipping it would
+be a preset that silently does nothing, not a working feature. Fixing this also surfaced a real,
+pre-existing hazard worth flagging: `NamingConvention.RecognizePrefix`/`Replace` mutate the instance
+in place and return it (documented as "Immutable" in the class summary, but not copy-on-write) — this
+doc's own quick-start example chained directly off the shared `NamingConvention.Default` singleton, which
+would have silently mutated it for every other map in the process that also falls back to `Default`. Fixed
+in the docs (now `new NamingConvention()...`) alongside this item, since the code touched was the same
+class.
 
 ### 6. No ecosystem/plugin packages yet — LOW–MEDIUM, impact: medium (long-term), effort: varies
 
@@ -205,8 +227,9 @@ form — don't copy API shape just because AutoMapper has it; copy outcomes.
    items 3 and 7). The gap this item originally left open against Mapster's default mode on this shape is
    now closed — FluxMapper beats both AutoMapper and Mapster here via `GetTypedMapper` (168.0 ns/op) and
    even the ordinary `IMapper.Map` call (213.3 ns/op) alone.
-4. **Then**: fix the `LICENSE` copyright text (done — see below) and add 2–3 built-in naming-convention
-   presets on top of the existing primitives; global type-pair converters.
+4. ~~Fix the `LICENSE` copyright text; add naming-convention presets; global type-pair converters~~ —
+   **done, September 2026**: `NamingConvention.SnakeCase()`/`LowerUnderscore()` and
+   `MapperConfigurationExpression.RegisterConverter` (see items 4 and 5).
 5. **Bigger, longer-term bet**: broaden source-generator coverage beyond flat `[MapFrom]` DTOs (item 7) —
    this is the item that could make the AOT-safe tier the default way most people use FluxMapper, not an
    opt-in for simple cases, and it would also directly close the nested/collection performance gap by

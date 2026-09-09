@@ -1,4 +1,5 @@
 using System.Reflection;
+using FluxMapper.Abstractions;
 using FluxMapper.Core.Conventions;
 using FluxMapper.Core.Internal;
 
@@ -12,6 +13,7 @@ namespace FluxMapper.Core.Configuration;
 public sealed class MapperConfigurationExpression : ITypeMapConfigurationProvider
 {
     private readonly Dictionary<(Type Source, Type Destination), TypeMapConfiguration> _configs = [];
+    private readonly Dictionary<(Type Source, Type Destination), (Type ConverterType, object? Instance)> _globalConverters = [];
 
     /// <summary><c>cfg.Naming.RecognizePrefix(...)</c> — applies to every map registered after it's configured.</summary>
     public NamingConvention Naming { get; private set; } = NamingConvention.Default;
@@ -21,6 +23,43 @@ public sealed class MapperConfigurationExpression : ITypeMapConfigurationProvide
         Naming = naming;
         return this;
     }
+
+    /// <summary>
+    /// Registers <paramref name="converter"/> for every member, across every map, whose resolved source
+    /// value type is exactly <typeparamref name="TSource"/> and destination value type is exactly
+    /// <typeparamref name="TDestination"/> -- AutoMapper's
+    /// <c>CreateMap&lt;TSource,TDestination&gt;().ConvertUsing(...)</c> equivalent, applied globally
+    /// rather than repeating a per-member resolver on every member that happens to touch this pair (a
+    /// custom <c>Money</c> type, a string-backed ID, a legacy enum shape). An explicit per-member override
+    /// (<c>ResolveUsing</c>/<c>ProjectUsing</c>/an explicit <c>.Map(...)</c> expression) always takes
+    /// precedence over this default for that one member -- see <c>Building.MappingPlanBuilder</c>. Not
+    /// merged by <see cref="AddProfile(Profile)"/>: register global converters on the top-level
+    /// configuration, not inside a <see cref="Profile"/>.
+    /// </summary>
+    public MapperConfigurationExpression RegisterConverter<TSource, TDestination>(IValueConverter<TSource, TDestination> converter)
+    {
+        ArgumentGuard.ThrowIfNull(converter, nameof(converter));
+        _globalConverters[(typeof(TSource), typeof(TDestination))] = (converter.GetType(), converter);
+        return this;
+    }
+
+    /// <summary>
+    /// Type-based sibling of <see cref="RegisterConverter{TSource,TDestination}(IValueConverter{TSource,TDestination})"/>:
+    /// registers <typeparamref name="TConverter"/> to be resolved per the same DI-first/Activator-fallback
+    /// rule every other resolver/converter type already uses, instead of sharing one fixed instance --
+    /// use this overload when the converter has per-resolution dependencies (DI-injected services) rather
+    /// than being safe to construct once and reuse forever.
+    /// </summary>
+    public MapperConfigurationExpression RegisterConverter<TSource, TDestination, TConverter>()
+        where TConverter : IValueConverter<TSource, TDestination>
+    {
+        _globalConverters[(typeof(TSource), typeof(TDestination))] = (typeof(TConverter), null);
+        return this;
+    }
+
+    /// <inheritdoc/>
+    public bool TryGetGlobalConverter(Type sourceValueType, Type destinationValueType, out (Type ConverterType, object? Instance) converter)
+        => _globalConverters.TryGetValue((sourceValueType, destinationValueType), out converter);
 
     public IMappingExpression<TSource, TDestination> CreateMap<TSource, TDestination>()
     {
