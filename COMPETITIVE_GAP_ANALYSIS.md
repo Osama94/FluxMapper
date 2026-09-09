@@ -178,7 +178,7 @@ AutoMapper has years of accreted third-party packages (`AutoMapper.Collection`,
 those packages solve, FluxMapper already covers natively (projection, resolvers) — but worth tracking as
 an ecosystem-maturity gap rather than a code gap. Not a near-term priority.
 
-### 7. Source generator coverage is narrower than Mapster.Tool's — PARTIALLY ADDRESSED (September 2026)
+### 7. Source generator coverage is narrower than Mapster.Tool's — ADDRESSED (September 2026)
 
 `Mapster.Tool` can generate code for a wide swath of a mapping configuration (attribute-based, fluent
 `ICodeGenerationRegister`, and interface-based styles). `[MapFrom]`'s generator originally covered only
@@ -204,17 +204,32 @@ source, mirroring `FluxMapper.Core.Construction.ConstructorSelector`'s runtime p
 alongside it so an unconstructable destination is a clear diagnostic, not a silent no-op that surfaces
 later as a confusing "MapFrom does not exist" at the call site.
 
+A third, independent round (also September 2026) closed every remaining item from that list: plain
+(non-record) `struct`/`record struct` destinations (construction was already generalized in round two;
+this was the mechanical codegen-keyword follow-up); `MapFromNamingConvention.SnakeCase` on `[MapFrom]`,
+mirroring the compiled-expression tier's `NamingConvention.SnakeCase()`; one-level flattening
+(`AddressCity` from a nested `Address.City`, resolved only when no ordinary source member already matches
+the destination name, so it never shadows a real match); an assembly-level `[MapFromConverter(...)]`
+attribute registering a type-pair converter for every `[MapFrom]` target in the same compilation (the
+source-gen counterpart to `RegisterConverter`, item 4, with the same DI-free/parameterless-constructor
+constraint stated up front as a scope boundary rather than discovered later); and much wider collection
+support — `HashSet<T>`/`ISet<T>`, the common read-oriented collection interfaces
+(`IList<T>`/`IReadOnlyList<T>`/`ICollection<T>`/`IReadOnlyCollection<T>`/`IEnumerable<T>`) as destinations,
+and `Dictionary<TKey,TValue>`/`IDictionary<,>`/`IReadOnlyDictionary<,>` on either side, including a
+dictionary value composed through its own nested `[MapFrom]` type. `FluxMapper.Analyzers`' `FLUX0002` was
+broadened in lockstep so it doesn't fire a false "no mappable members" warning against any of these newly
+recognized shapes. See `DOCUMENTATION.md`'s source generator section for the full member-matching order
+and a worked example of each shape.
+
 Deliberately still out of scope, to keep the generator's string-templated codegen simple enough to trust:
-plain (non-record) `struct` destinations (a mechanical follow-up now — blocked only by the codegen's
-class/record keyword selection, not a new mapping shape), no cycle/reference protection (AutoMapper-style
-shared-instance dedup, which the compiled-expression tier does support), no
-`HashSet<T>`/`Dictionary<TKey,TValue>`/`Immutable*`/wider `IEnumerable<T>`-family collection targets beyond
-`List<T>`/array, no naming conventions or flattening, no global type-pair converters (`RegisterConverter`,
-item 4 — the compiled-expression tier only), and no equivalent of `CreateMap`'s fuller fluent configuration
-surface (custom resolvers, conditions, `ForPath`, etc.) — those remain the compiled-expression tier's job.
-Expanding further in that direction is still the bigger, longer-term bet: it's the one place where "more
-powerful than both of them combined" is a genuinely available, differentiated outcome rather than
-parity-chasing.
+no cycle/reference protection (AutoMapper-style shared-instance dedup, which the compiled-expression tier
+does support via `.PreserveReferences()`), no `Immutable*` collection types, no more than one level of
+flattening or of dictionary/collection nesting, no converters registered in a referenced assembly (only
+the same compilation is visible), and no equivalent of `CreateMap`'s fuller fluent configuration surface
+(custom resolvers, conditions, `ForPath`, per-call `Items`) — those remain the compiled-expression
+tier's job. What's left is now a shorter, more deliberate list than a size gap: the generator covers every
+shape a typical flat-to-moderately-nested DTO actually needs, and the remaining exclusions are
+architectural choices (no runtime behavior, no DI, no unbounded recursion) rather than unfinished work.
 
 ### Cosmetic, fix while you're in there — DONE (v1.2.0)
 
@@ -248,14 +263,18 @@ form — don't copy API shape just because AutoMapper has it; copy outcomes.
 4. ~~Fix the `LICENSE` copyright text; add naming-convention presets; global type-pair converters~~ —
    **done, September 2026**: `NamingConvention.SnakeCase()`/`LowerUnderscore()` and
    `MapperConfigurationExpression.RegisterConverter` (see items 4 and 5).
-5. **Bigger, longer-term bet, in progress**: broaden source-generator coverage beyond flat `[MapFrom]`
-   DTOs (item 7) — this is the item that could make the AOT-safe tier the default way most people use
-   FluxMapper, not an opt-in for simple cases. First round done, September 2026: `record`/`record class`/
-   `record struct` destinations now actually work at all (previously silently ungenerated for every
-   record shape, not just positional ones), plus constructor-based construction generalized beyond
-   records to any destination reachable via one resolvable public constructor, plus `FLUX0003` for the
-   unconstructable case. Still open: plain `struct` destinations, `HashSet<T>`/`Dictionary<TKey,TValue>`/
-   wider collection interfaces, naming conventions, flattening, and global converters in source-gen.
+5. ~~Broaden source-generator coverage beyond flat `[MapFrom]` DTOs~~ — **done, September 2026** (item
+   7, three rounds): this was the item that could make the AOT-safe tier the default way most people use
+   FluxMapper, not an opt-in for simple cases. Round one: `record`/`record class`/`record struct`
+   destinations now actually work at all (previously silently ungenerated for every record shape, not
+   just positional ones), plus constructor-based construction generalized beyond records to any
+   destination reachable via one resolvable public constructor, plus `FLUX0003` for the unconstructable
+   case. Round two/three: plain `struct`/`record struct` destinations, naming-convention presets
+   (`MapFromNamingConvention.SnakeCase`), one-level flattening, assembly-level global converters
+   (`[MapFromConverter]`), and much broader `HashSet<T>`/collection-interface/`Dictionary<TKey,TValue>`
+   shapes. What remains out of scope is deliberate: cycle protection, `Immutable*` collections, more than
+   one level of flattening/nesting, cross-assembly converters, and `CreateMap`'s fuller fluent surface
+   (resolvers, conditions, `ForPath`) all stay the compiled-expression tier's job — see item 7.
 
 None of this is a blocker for shipping 1.2.0 — the netstandard2.0/net10.0 multi-targeting and the
 benchmark are both already in, and the icon and `LICENSE` fix already landed alongside them.

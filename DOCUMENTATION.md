@@ -781,20 +781,82 @@ var dto = OrderDto.MapFrom(order); // generated at compile time -- IMapper is ne
 ```
 
 `FluxMapper.SourceGenerator` is a Roslyn incremental generator that turns `[MapFrom(typeof(TSource))]`
-on a `partial class`/`partial record` into a real, generated `static TDestination MapFrom(TSource
-source)` method on that same type — genuinely zero reflection and zero `Expression.Compile()` at
-runtime, because everything it produces is ordinary compiled C# your assembly ships with, not code
-assembled at runtime. This is the **only** execution path in FluxMapper that can honestly report
-AOT-safety, and it's why Native AOT-published applications should reach for `[MapFrom]` on their DTOs
-wherever the mapping is flat enough to qualify (see the scope note below).
+on a `partial class`/`partial record`/`partial struct`/`partial record struct` into a real, generated
+`static TDestination MapFrom(TSource source)` method on that same type — genuinely zero reflection
+and zero `Expression.Compile()` at runtime, because everything it produces is ordinary compiled C# your
+assembly ships with, not code assembled at runtime. This is the **only** execution path in FluxMapper
+that can honestly report AOT-safety, and it's why Native AOT-published applications should reach for
+`[MapFrom]` on their DTOs wherever the mapping is flat enough to qualify (see the scope note at the end
+of this section).
 
-Member matching here is deliberately simple and self-contained: an exact-name, direct-or-implicit-
-conversion match between a public settable destination property and a public readable source property of
-the same name. It does **not** share `MappingPlanBuilder`'s richer pipeline — no naming conventions, no
-flattening, no nested/collection mapping, no resolvers, no `ReverseMap`. If a destination property has no
-matching source property, it's simply left off the generated initializer (default-initialized) rather
-than causing a generator error; see [Roslyn analyzers](#roslyn-analyzers) for how you find out about that
-at edit time instead of by inspecting generated code.
+Member matching runs a fixed order of shapes per destination member, stopping at the first one that
+resolves: a registered global converter (below), a direct or implicitly-convertible same-named member, a
+nested member composed through the destination type's own `[MapFrom(typeof(...))]`, a
+`Dictionary<TKey,TValue>`-shaped member, a collection-shaped member, and finally — only if no ordinary
+source member exists under that name at all — one level of flattening. If nothing matches, the member
+is simply left off the generated initializer (default-initialized) rather than causing a generator error;
+see [Roslyn analyzers](#roslyn-analyzers) for how you find out about that at edit time instead of by
+inspecting generated code.
+
+**Naming conventions.** `[MapFrom(typeof(Source), NamingConvention = MapFromNamingConvention.SnakeCase)]`
+loosens the exact-name rule to a case-insensitive, underscore-insensitive match — the source-generator
+equivalent of the compiled-expression tier's `NamingConvention.SnakeCase()`/`LowerUnderscore()` presets
+(`MapFromNamingConvention.Exact`, the default, keeps the original exact-name behavior). An exact match is
+always tried first regardless of this setting; if more than one source member would normalize to the same
+name, the generator treats the destination member as unmatched rather than guessing which one was meant.
+
+```csharp
+public class Order { public string user_name { get; set; } }
+
+[MapFrom(typeof(Order), NamingConvention = MapFromNamingConvention.SnakeCase)]
+public partial class OrderDto { public string UserName { get; set; } } // matches user_name
+```
+
+**One-level flattening.** A destination member with no matching source member is tried against every
+source property in turn as a `[prefix][remainder]` split — `AddressCity` against a source `Address`
+property whose own type has a `City` member, for instance — and resolved one level into the prefix's
+type. This is deliberately bounded to exactly one level; a flattened member's own destination type isn't
+itself searched for a further flattening opportunity. An ambiguous split (more than one source property
+name is a valid prefix) is treated as no match, the same conservative rule used everywhere else in the
+generator.
+
+```csharp
+public class Address { public string City { get; set; } }
+public class Order { public Address Address { get; set; } }
+
+[MapFrom(typeof(Order))]
+public partial class OrderDto { public string AddressCity { get; set; } } // Address.City, one level
+```
+
+**Global converters.** `[assembly: MapFromConverter(typeof(Money), typeof(decimal), typeof(MoneyToDecimalConverter))]`
+registers a type-pair converter visible to every `[MapFrom]` target in the *same compilation* — the
+source-generator counterpart to the compiled-expression tier's `RegisterConverter` (see
+[Global type-pair converters](#global-type-pair-converters-registerconverter)). `MoneyToDecimalConverter`
+must implement `IValueConverter<Money, decimal>` and have an accessible public parameterless
+constructor — the generator constructs it with `new MoneyToDecimalConverter()` at each call site,
+since it has no DI container to consult at compile time. A converter registered in a referenced assembly
+is **not** visible to a downstream consumer's own `[MapFrom]` targets — a stated scope boundary, not
+an oversight.
+
+**Collections and dictionaries.** Beyond `List<T>` and single-dimensional arrays, the generator also
+recognizes `HashSet<T>`/`ISet<T>` on either side, the common read-oriented collection interfaces
+(`IList<T>`, `IReadOnlyList<T>`, `ICollection<T>`, `IReadOnlyCollection<T>`, `IEnumerable<T>`) as
+destinations (materialized via a concrete `List<T>` or `HashSet<T>` as the shape requires), and
+`Dictionary<TKey,TValue>`/`IDictionary<,>`/`IReadOnlyDictionary<,>` on either side, with the value
+composed through a nested `[MapFrom]` type when the key/value types themselves differ between source and
+destination. A source with a guaranteed `Count` but no indexer (`HashSet<T>`, `ICollection<T>`) is read
+through a `foreach` loop instead of the indexed loop used for `List<T>`/array/`IList<T>` sources; a plain
+`IEnumerable<T>` source with no `Count` at all is deliberately still unsupported, since the generator
+avoids buffering an unbounded sequence just to discover its length up front.
+
+**Struct and record destinations.** `partial struct`/`partial record struct` destinations work exactly
+like `partial class`/`partial record` ones (value types always have an implicit parameterless
+constructor, so they never need the constructor-selection path below). A destination reachable only
+through a parameterized public constructor — any positional record, e.g.
+`record OrderDto(int Id, decimal Total)`, or a plain class/struct with no parameterless constructor —
+is constructed by selecting the public constructor with the most parameters that all resolve against the
+source, using named-argument emission so a defaulted-but-unresolvable parameter can be omitted. `FLUX0003`
+flags a destination where no constructor resolves at all — see [Roslyn analyzers](#roslyn-analyzers).
 
 Every other execution path in FluxMapper (everything reached through `IMapper`) is annotated
 `[RequiresDynamicCode]`/`[RequiresUnreferencedCode]` — accurately, not defensively — because it always
@@ -803,18 +865,34 @@ published application calling through `IMapper` gets a build-time warning pointi
 confusing runtime failure. `samples/FluxMapper.AotSmokeTest` in the repository is a real, working Native
 AOT-published console app exercising the `[MapFrom]` path end to end.
 
+Still deliberately out of scope, to keep the generator's string-templated codegen simple enough to trust:
+no cycle/reference protection (AutoMapper-style shared-instance dedup, which the compiled-expression tier
+does support via `.PreserveReferences()`), no `Immutable*` collection types, no more than one level of
+flattening or of dictionary/collection nesting, no converters registered in a referenced assembly, and no
+equivalent of `CreateMap`'s fuller fluent configuration surface (custom resolvers, `.Condition()`,
+`ForPath`, per-call `Items`) — those remain the compiled-expression tier's job.
+
 ## Roslyn analyzers
 
 `FluxMapper.Analyzers` runs independently of the source generator, so a project using `[MapFrom]` gets
-IDE-time feedback even without invoking `FluxMapper.SourceGenerator` directly:
+IDE-time feedback even without invoking `FluxMapper.SourceGenerator` directly. Its rules mirror the
+generator's own resolution logic (naming conventions, flattening, global converters, and collection/
+dictionary shapes included) but are deliberately biased toward *not* firing when uncertain — a false
+"looks fine" is an acceptable analyzer imprecision; a false "this is broken" that contradicts what the
+generator actually built is not:
 
-- **`FLUX0001`** (error): the `[MapFrom]`-attributed class isn't declared `partial`. Without this
+- **`FLUX0001`** (error): the `[MapFrom]`-attributed type isn't declared `partial`. Without this
   diagnostic, the failure you'd actually see is a confusing "type already defines a member called
   `MapFrom`" or simply "nothing got generated" — this points straight at the real cause.
-- **`FLUX0002`** (warning): the attributed class has zero destination members the generator could match
-  against the declared source type (the same exact-name, direct/implicit-conversion rule the generator
-  itself uses) — almost certainly a naming mismatch or the wrong source type, not an intentional
-  "generate an empty mapper."
+- **`FLUX0002`** (warning): the attributed type has zero destination members the generator could match
+  against the declared source type, under the same rules the generator itself uses (naming convention,
+  flattening, global converters, and collection/dictionary shapes included) — almost certainly a
+  naming mismatch or the wrong source type, not an intentional "generate an empty mapper."
+- **`FLUX0003`** (error): none of the destination's public constructors have a full set of resolvable
+  parameters, so the generator can't construct an instance at all. This only applies to a destination with
+  no public parameterless constructor (a positional record, or a class/struct reachable only via a
+  parameterized constructor) — see "Struct and record destinations" in the source generator section
+  above.
 
 ## Dependency injection
 
@@ -880,7 +958,7 @@ Every diagnostic FluxMapper can produce:
 | `MAP4001` | Error | (Projection only, thrown by `ProjectTo<T>()`/`GetProjectionExpression`, not by `AssertConfigurationIsValid`) The plan isn't safe to project over `IQueryable` — a runtime-only resolver/converter, a dictionary-valued member, polymorphic dispatch, a `.Condition()`, or a `ForPath`-touched member somewhere in the shape. | Remove the offending member from the projected shape, map it after materializing (`.ToList()` then a normal in-memory `Map()`), or replace a runtime `IValueResolver<>` with `IProjectionValueResolver<>` + `.ProjectUsing<>()`. |
 | `MAPSG002` | Error | No usable public constructor for the destination: no parameterless constructor exists, and no parameterized constructor's parameters could all be resolved from the source type. | `.ConstructUsing((src) => new Destination(/* ... */))`. |
 
-`FLUX0001`/`FLUX0002` (the `[MapFrom]` analyzer's diagnostics) are edit-time-only and not part of this
+`FLUX0001`—`FLUX0003` (the `[MapFrom]` analyzer's diagnostics) are edit-time-only and not part of this
 runtime catalog — see [Roslyn analyzers](#roslyn-analyzers).
 
 ## Execution tiers and AOT/trim safety
@@ -940,7 +1018,7 @@ differ:
 | `FluxMapper.Abstractions` | BCL only | Contracts (`IMapper`, `IValueResolver<>`, `IProjectionValueResolver<>`, `[MapFrom]`). Fully AOT/trim compatible. |
 | `FluxMapper.Core` | `FluxMapper.Abstractions` | Fluent configuration, compiled-expression execution tier, projection engine. |
 | `FluxMapper.SourceGenerator` | Roslyn (build-time only) | `[MapFrom]` incremental generator. |
-| `FluxMapper.Analyzers` | Roslyn (build-time only) | `[MapFrom]` diagnostics (`FLUX0001`/`FLUX0002`). |
+| `FluxMapper.Analyzers` | Roslyn (build-time only) | `[MapFrom]` diagnostics (`FLUX0001`—`FLUX0003`). |
 | `FluxMapper.Extensions.DependencyInjection` | `FluxMapper.Core` | `AddFluxMapper` for `IServiceCollection`. |
 
 `FluxMapper`, `FluxMapper.Abstractions`, `FluxMapper.Core`, and `FluxMapper.Extensions.DependencyInjection`
