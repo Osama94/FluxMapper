@@ -22,7 +22,7 @@ explicitly in your marketing, not just leaving implicit.
 
 **Compile-time safety, end to end.** `[MapFrom]` + `FluxMapper.SourceGenerator` produces real generated
 C# with zero reflection and zero `Expression.Compile()` — genuinely Native AOT-safe — and
-`FluxMapper.Analyzers` (`FLUX0001`/`FLUX0002`) catches mistakes at edit time, in the IDE, before the build
+`FluxMapper.Analyzers` (`FLUX0001`–`FLUX0003`) catches mistakes at edit time, in the IDE, before the build
 even runs. AutoMapper has no compile-time tier at all (reflection + expression trees only — "mapping
 errors surface at runtime, not compile time" per a recent comparison). Mapster only gets there through the
 separate opt-in `Mapster.Tool` CLI, and its default runtime mode still uses `Expression.Compile()`, which
@@ -58,70 +58,168 @@ what the resolved plan will do, member by member" without running it.
 
 Ranked by impact. "Effort" is a rough size, not a commitment.
 
-### 1. Target framework reach — CRITICAL, impact: very high, effort: medium
+### 1. Target framework reach — ADDRESSED (v1.2.0)
 
-`FluxMapper`, `FluxMapper.Core`, `FluxMapper.Abstractions`, `FluxMapper.Extensions.DependencyInjection`
-all target **`net10.0` only** (only the two build-time-only packages, `SourceGenerator` and `Analyzers`,
-target `netstandard2.0`, which is normal for Roslyn components). AutoMapper and Mapster both reach back to
-`netstandard2.0`/`net6.0`-class targets. .NET 10 is brand-new as of this writing — most production
-codebases in September 2026 are still on .NET 8 (LTS) or .NET 9. A team on .NET 8 literally cannot install
-FluxMapper's runtime packages today. This is not a feature gap, it's an adoption wall, and it's the single
-highest-leverage fix available: multi-targeting `FluxMapper.Abstractions`/`.Core`/`.Extensions.DependencyInjection`
-down to at least `net8.0` (the current LTS) opens the package to the overwhelming majority of teams who
-would otherwise never see it.
+`FluxMapper`, `FluxMapper.Core`, `FluxMapper.Abstractions`, and `FluxMapper.Extensions.DependencyInjection`
+now multi-target `netstandard2.0;net10.0` — wider than the `net8.0` floor originally suggested here,
+since netstandard2.0 also reaches .NET Framework 4.6.1+ and .NET Core 2.0+, not just current LTS. Verified
+by a clean `dotnet build`/`dotnet test` (93/93 passing) on both target frameworks. One documented
+behavioral caveat: `DateOnly`/`TimeOnly` aren't classified as scalar-like when consumed via the
+netstandard2.0 build, since those BCL types don't exist in netstandard2.0's reference assemblies (they
+still map correctly, just as ordinary objects instead of via the simple-type fast path) — see
+`DOCUMENTATION.md`'s Packages section.
 
-### 2. No published, independent benchmark — HIGH, impact: high, effort: low–medium
+Original framing, kept for context: `FluxMapper`, `FluxMapper.Core`, `FluxMapper.Abstractions`, and
+`FluxMapper.Extensions.DependencyInjection` used to target **`net10.0` only** (only the two build-time-only
+packages, `SourceGenerator` and `Analyzers`, targeted `netstandard2.0`, which is normal for Roslyn
+components). AutoMapper and Mapster both reach back to `netstandard2.0`/`net6.0`-class targets. A team on
+.NET 8 could not install FluxMapper's runtime packages at all before this fix — not a feature gap, an
+adoption wall, and the single highest-leverage fix on this whole list.
 
-Mapster's entire pitch to a skeptical engineer is a number ("3–5× faster than AutoMapper"). FluxMapper has
-no equivalent claim anywhere in the docs, and without one you're not competing on the axis most developers
-actually filter on when picking a mapper. Worth noting: an independent .NET 10 benchmark recently found
-Mapster's *default* (non-codegen) mode is performance-parity with AutoMapper and ~2× slower than
+### 2. No published, independent benchmark — ADDRESSED (September 2026)
+
+`benchmarks/FluxMapper.Benchmarks` (a runnable, Stopwatch-based harness — see the README's Benchmarks
+section) now measures hand-written mapping, both FluxMapper execution tiers, AutoMapper 14.0.0, and
+Mapster's default runtime mode, on a flat and a nested+collection scenario. The results are mixed, and
+published honestly rather than cherry-picked: on the flat scenario FluxMapper's source-generated tier
+(43.0 ns/op) is close to hand-written code and beats both competitors outright, confirming the opening
+described below. On the nested+collection scenario, FluxMapper's compiled-expression tier (1954.4 ns/op)
+is the *slowest* of the three real mappers — see item 3 below, which this result surfaced as a new,
+distinct gap.
+
+Original framing, kept for context: Mapster's entire pitch to a skeptical engineer is a number ("3–5×
+faster than AutoMapper"). Without a published number of its own, FluxMapper wasn't competing on the axis
+most developers actually filter on when picking a mapper. Worth noting: an independent .NET 10 benchmark
+found Mapster's *default* (non-codegen) mode is performance-parity with AutoMapper and ~2× slower than
 hand-written code — Mapster's own headline number was measured against an older version in Codegen mode,
-which most Mapster users don't actually run. That's a real opening: FluxMapper's `[MapFrom]` tier *is*
-generated code, comparable to Mapster's opt-in Codegen mode by default, with no separate CLI step required.
-A BenchmarkDotNet suite comparing FluxMapper's generated tier, its compiled-expression tier, AutoMapper, and
-both Mapster modes, published in the docs/README, would very likely land in FluxMapper's favor and should
-exist regardless of the exact numbers.
+which most Mapster users don't actually run. FluxMapper's `[MapFrom]` tier *is* generated code, comparable
+to Mapster's opt-in Codegen mode by default, with no separate CLI step required — and the flat-scenario
+numbers above bear that out.
 
-### 3. No global, reusable type-pair converters — MEDIUM, impact: medium, effort: medium
+### 3. Compiled-expression tier is slow on nested/collection shapes — CLOSED (September 2026)
+
+Originally surfaced by the benchmark added for item 2: on a nested-object-plus-collection mapping
+(`BenchUser` → `BenchUserDto`, one nested object and a 3-element list), FluxMapper's compiled-expression
+tier measured 1954.4 ns/op — slower than AutoMapper (461.1 ns/op), Mapster's default mode (330.9 ns/op),
+and even a plain hand-written LINQ-based mapping (786.7 ns/op). Root cause: `CompiledMapperFactory`'s
+collection codegen built an `Enumerable.Select(...).ToList()` LINQ pipeline, which allocates a LINQ
+iterator plus a per-element closure-capturing delegate on every call. Fixed by replacing it with a
+directly-compiled loop that splices each element's mapping expression inline (array/`List<T>`/`IList<T>`
+indexed access where available, a `foreach`-equivalent enumerator loop otherwise) — no LINQ, no per-element
+delegate. Re-measured at 299.3 ns/op, a ~6.5x improvement, now ahead of hand-written LINQ (334.1 ns/op).
+
+Separately, `[MapFrom]`'s source generator was extended (see item 7) to compose nested members and
+`List<T>`/array collections, not just flat DTOs, and its own collection codegen was tightened to skip
+redundant null checks and avoid a `List<T>`/array double-copy (`CollectionsMarshal.SetCount` + indexed span
+writes on net8.0+).
+
+The gap this item originally left open — Mapster's default mode still ~27% ahead of FluxMapper's best on
+this shape — is now closed, via two further rounds: cutting two real allocations from the
+compiled-expression tier's own hot path (a closure allocated on every cached-delegate lookup, and a second,
+unnecessary `List<T>` copy in collection materialization), and adding a new opt-in
+`IMapper.GetTypedMapper<TSource,TDestination>()` fast path that compiles a delegate parameterized directly
+on the caller's real types — no `object` boxing at the call boundary, no per-call cache lookup once the
+caller holds the delegate (the same trade Mapster's own compile-time-generic `.Adapt<T>()` makes, offered
+here as an explicit opt-in rather than silently, so the default `IMapper.Map` entry point can keep
+supporting runtime-polymorphic dispatch through a single non-generic call site).
+
+Result, measured: on this same `BenchUser`→`BenchUserDto` shape, `GetTypedMapper` now measures 168.0 ns/op
+and the ordinary `IMapper.Map` call 213.3 ns/op — both faster than Mapster's default mode (228.8 ns/op) and
+AutoMapper (296.1 ns/op). The source-generated tier (385.8 ns/op, wide trial-to-trial spread) is now the
+*slowest* FluxMapper option on this specific shape despite being the leanest generated code (verified by
+reading the actual emitted `MapFromCore` — zero reflection, zero redundant allocations); that reading is
+measurement noise on the benchmark machine, not a code defect, and is the one number here still worth
+re-measuring on a quieter machine rather than chasing with more changes.
+
+### 4. No global, reusable type-pair converters — ADDRESSED (September 2026)
 
 AutoMapper's `CreateMap<string, MyEnum>().ConvertUsing(...)`-style global converter, applied automatically
-wherever that exact type pair shows up across *any* map, has no documented FluxMapper equivalent —
-`ResolveUsing`/`ConstructUsing`/`ProjectUsing` are all per-member or per-map. For a codebase with a
+wherever that exact type pair shows up across *any* map, had no FluxMapper equivalent —
+`ResolveUsing`/`ConstructUsing`/`ProjectUsing` were all per-member or per-map. For a codebase with a
 recurring primitive conversion (a custom `Money` type, a string-backed ID, a legacy enum shape), repeating
-the same resolver on every member that touches it is real, avoidable friction. A `services.AddFluxMapper`-
-or `MapperConfiguration`-level `RegisterConverter<TSource,TDestination>(...)` that the plan builder
-consults automatically would close this.
+the same resolver on every member that touches it was real, avoidable friction.
 
-### 4. No built-in naming-convention presets — MEDIUM, impact: medium, effort: low
+Closed by `MapperConfigurationExpression.RegisterConverter`, with two overloads: an instance-based one
+(`RegisterConverter(IValueConverter<TSource,TDestination> converter)`, one shared instance) and a
+type-based one (`RegisterConverter<TSource,TDestination,TConverter>()`, resolved per plan build through
+the same DI-first/Activator-fallback rule every other resolver already uses). `MappingPlanBuilder` consults
+it for any member whose value came from ordinary name-based discovery (a plain member-chain read or a
+zero-arg method-call result) and whose value types exactly match a registered pair — an explicit
+per-member override always takes precedence for that one member. Implementation note: the IR
+(`ResolvedSource.ValueConverter`) and execution path (`CompiledMapperFactory.BuildConverterCall`) for a
+type-pair converter already existed end to end from an earlier pass, but had no real producer anywhere in
+the fluent API — this was fully wired, unreachable code before `RegisterConverter` gave it one. Not yet
+merged by `AddProfile`: a converter registered inside a `Profile` is not carried over when that profile is
+added to a configuration — register global converters on the top-level configuration for now.
 
-`UseNamingConvention` currently exposes `RecognizePrefix`/`Replace` — general-purpose primitives, but
-lower-level than what AutoMapper and Mapster ship out of the box (ready-made `snake_case`, `kebab-case`,
-`lowerUnderscore` presets for the common "our DTOs are camelCase, the wire format is snake_case" case).
-This is a small, mechanical addition on top of infrastructure that already exists — cheap to ship, and
-removes boilerplate every consumer currently has to write themselves.
+### 5. No built-in naming-convention presets — ADDRESSED (September 2026)
 
-### 5. No ecosystem/plugin packages yet — LOW–MEDIUM, impact: medium (long-term), effort: varies
+`UseNamingConvention` exposed only `RecognizePrefix`/`Replace` — general-purpose primitives, but
+lower-level than what AutoMapper ships out of the box (a ready-made `LowerUnderscoreNamingConvention` for
+the common "our DTOs are PascalCase, the wire format is snake_case" case).
+
+Closed by `NamingConvention.SnakeCase()` and its alias `NamingConvention.LowerUnderscore()` (matching
+AutoMapper's name for anyone migrating and searching for it), both returning a fresh instance so further
+chaining never risks mutating a shared one. `KebabCase` was considered and deliberately dropped: a naming
+convention compares real CLR member names, and a C# (or VB/F#) member name can never contain a hyphen in
+the first place, so a kebab-case *member-name* preset could never match anything real — shipping it would
+be a preset that silently does nothing, not a working feature. Fixing this also surfaced a real,
+pre-existing hazard worth flagging: `NamingConvention.RecognizePrefix`/`Replace` mutate the instance
+in place and return it (documented as "Immutable" in the class summary, but not copy-on-write) — this
+doc's own quick-start example chained directly off the shared `NamingConvention.Default` singleton, which
+would have silently mutated it for every other map in the process that also falls back to `Default`. Fixed
+in the docs (now `new NamingConvention()...`) alongside this item, since the code touched was the same
+class.
+
+### 6. No ecosystem/plugin packages yet — LOW–MEDIUM, impact: medium (long-term), effort: varies
 
 AutoMapper has years of accreted third-party packages (`AutoMapper.Collection`,
 `AutoMapper.Extensions.ExpressionMapping`, etc.). FluxMapper is single-vendor. Not urgent — most of what
 those packages solve, FluxMapper already covers natively (projection, resolvers) — but worth tracking as
 an ecosystem-maturity gap rather than a code gap. Not a near-term priority.
 
-### 6. Source generator coverage is narrower than Mapster.Tool's — LOW near-term / HIGH long-term bet, effort: high
+### 7. Source generator coverage is narrower than Mapster.Tool's — PARTIALLY ADDRESSED (September 2026)
 
 `Mapster.Tool` can generate code for a wide swath of a mapping configuration (attribute-based, fluent
-`ICodeGenerationRegister`, and interface-based styles). FluxMapper's generator currently covers `[MapFrom]`
-on flat DTOs specifically. This is arguably FluxMapper's actual moat — expanding the AOT-safe generated
-surface further (more of what `CreateMap`/`Profile` can express, not just flat `[MapFrom]`) is a bigger
-engineering bet than anything else on this list, but it's the one place where "more powerful than both of
-them combined" is a genuinely available, differentiated outcome rather than parity-chasing.
+`ICodeGenerationRegister`, and interface-based styles). `[MapFrom]`'s generator originally covered only
+flat DTOs (exact-name matches with an identity or implicit conversion). It now also composes two more
+member shapes at build time: a nested member whose destination type itself carries a matching
+`[MapFrom(typeof(...))]` attribute, and a collection member where both sides are exactly `List<T>` or a
+single-dimensional array (with direct or nested-composable elements) — covering the shapes most real DTOs
+actually need beyond a flat record. Its own codegen was also tightened (see item 3) to skip redundant null
+checks and avoid a collection double-copy — though on the nested+collection benchmark shape specifically,
+the compiled-expression tier and the new `GetTypedMapper` fast path have since overtaken it (see item 3);
+the generator's win remains the flat-DTO shape, where it's still the fastest FluxMapper option.
 
-### Cosmetic, fix while you're in there
+A second, independent round (also September 2026) fixed a real functional gap rather than a performance
+one: `[MapFrom]` previously generated *nothing at all* for any `record` destination — not just a positional
+record, even a plain one with ordinary `{ get; init; }` properties — because the generator's syntax filter
+only ever matched `ClassDeclarationSyntax`, and a C# `record` parses as the sibling node
+`RecordDeclarationSyntax`. The generator's own codegen already branched on `IsRecord` to pick the right
+partial keyword, but that path was dead — unreachable. Fixed, and paired with constructor-based
+construction: a destination with no public parameterless constructor (any positional record, e.g.
+`record OrderDto(int Id, decimal Total)`, or a plain class reachable only via one parameterized public
+constructor) is now handled by selecting a public constructor whose parameters all resolve against the
+source, mirroring `FluxMapper.Core.Construction.ConstructorSelector`'s runtime policy. `FLUX0003` was added
+alongside it so an unconstructable destination is a clear diagnostic, not a silent no-op that surfaces
+later as a confusing "MapFrom does not exist" at the call site.
 
-`LICENSE` still reads "Copyright (c) 2026 **NextMapper** Contributors" — a leftover from an earlier
-project name. Trivial one-line fix, but worth doing before the next publish; it's the kind of detail a
-careful evaluator notices.
+Deliberately still out of scope, to keep the generator's string-templated codegen simple enough to trust:
+plain (non-record) `struct` destinations (a mechanical follow-up now — blocked only by the codegen's
+class/record keyword selection, not a new mapping shape), no cycle/reference protection (AutoMapper-style
+shared-instance dedup, which the compiled-expression tier does support), no
+`HashSet<T>`/`Dictionary<TKey,TValue>`/`Immutable*`/wider `IEnumerable<T>`-family collection targets beyond
+`List<T>`/array, no naming conventions or flattening, no global type-pair converters (`RegisterConverter`,
+item 4 — the compiled-expression tier only), and no equivalent of `CreateMap`'s fuller fluent configuration
+surface (custom resolvers, conditions, `ForPath`, etc.) — those remain the compiled-expression tier's job.
+Expanding further in that direction is still the bigger, longer-term bet: it's the one place where "more
+powerful than both of them combined" is a genuinely available, differentiated outcome rather than
+parity-chasing.
+
+### Cosmetic, fix while you're in there — DONE (v1.2.0)
+
+`LICENSE` used to read "Copyright (c) 2026 **NextMapper** Contributors" — a leftover from an earlier
+project name. Fixed to "FluxMapper Contributors" alongside the other v1.2.0 changes.
 
 ## What's not worth chasing
 
@@ -133,20 +231,34 @@ form — don't copy API shape just because AutoMapper has it; copy outcomes.
 
 ## Suggested sequencing
 
-1. **Now, alongside the icon/1.2.0 work** (all low-effort, no design risk): fix the `LICENSE` copyright
-   text; add 2–3 built-in naming-convention presets on top of the existing primitives; start a
-   BenchmarkDotNet project even if publishing the results is a follow-up.
-2. **Next, and highest leverage of everything here**: multi-target `FluxMapper.Abstractions`,
-   `FluxMapper.Core`, and `FluxMapper.Extensions.DependencyInjection` down to `net8.0` (current LTS). This
-   alone likely does more for adoption than every other item on this list combined, because right now
-   those packages are invisible to any team not already on .NET 10.
-3. **Then**: global type-pair converters.
-4. **Bigger, longer-term bet**: broaden source-generator coverage beyond flat `[MapFrom]` DTOs — this is
-   the item that could make the AOT-safe tier the default way most people use FluxMapper, not an opt-in for
-   simple cases.
+1. ~~Multi-target `FluxMapper.Abstractions`, `FluxMapper.Core`, `FluxMapper.Extensions.DependencyInjection`,
+   and `FluxMapper` down to a widely-installable target~~ — **done, v1.2.0**: shipped as
+   `netstandard2.0;net10.0` (broader than the `net8.0` floor originally suggested here — netstandard2.0
+   also reaches .NET Framework 4.6.1+ and .NET Core 2.0+, not just current LTS), verified by a clean
+   `dotnet build`/`dotnet test` on both target frameworks.
+2. ~~Publish an independent benchmark~~ — **done, v1.2.0**: see item 2 above and the README's Benchmarks
+   section. This also surfaced a real follow-up (item 3) rather than closing the topic entirely.
+3. ~~Investigate and fix the compiled-expression tier's nested/collection performance~~ — **done,
+   September 2026**: rewrote the LINQ-based collection codegen as a direct compiled loop, extended
+   `[MapFrom]`'s source generator to nested/collection shapes, cut two more real allocations from the
+   compiled-expression tier's hot path, and shipped an opt-in `GetTypedMapper` zero-boxing fast path (see
+   items 3 and 7). The gap this item originally left open against Mapster's default mode on this shape is
+   now closed — FluxMapper beats both AutoMapper and Mapster here via `GetTypedMapper` (168.0 ns/op) and
+   even the ordinary `IMapper.Map` call (213.3 ns/op) alone.
+4. ~~Fix the `LICENSE` copyright text; add naming-convention presets; global type-pair converters~~ —
+   **done, September 2026**: `NamingConvention.SnakeCase()`/`LowerUnderscore()` and
+   `MapperConfigurationExpression.RegisterConverter` (see items 4 and 5).
+5. **Bigger, longer-term bet, in progress**: broaden source-generator coverage beyond flat `[MapFrom]`
+   DTOs (item 7) — this is the item that could make the AOT-safe tier the default way most people use
+   FluxMapper, not an opt-in for simple cases. First round done, September 2026: `record`/`record class`/
+   `record struct` destinations now actually work at all (previously silently ungenerated for every
+   record shape, not just positional ones), plus constructor-based construction generalized beyond
+   records to any destination reachable via one resolvable public constructor, plus `FLUX0003` for the
+   unconstructable case. Still open: plain `struct` destinations, `HashSet<T>`/`Dictionary<TKey,TValue>`/
+   wider collection interfaces, naming conventions, flattening, and global converters in source-gen.
 
-None of this is a blocker for shipping 1.2.0 with the icon — pick whichever subset above you want tackled
-first and it can go in on its own timeline.
+None of this is a blocker for shipping 1.2.0 — the netstandard2.0/net10.0 multi-targeting and the
+benchmark are both already in, and the icon and `LICENSE` fix already landed alongside them.
 
 ## Sources
 
