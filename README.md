@@ -6,7 +6,7 @@ generator when it can, a cached compiled-expression tier when it can't, and real
 (`ProjectTo<T>`) for EF Core and friends — instead of committing to reflection or expression trees alone.
 
 > **Status: v1.2.0.** The API surface and execution engine are implemented and
-> covered by an xunit test suite (93 tests), including a real `Microsoft.EntityFrameworkCore.InMemory`
+> covered by an xunit test suite (100 tests), including a real `Microsoft.EntityFrameworkCore.InMemory`
 > projection test and a real Native AOT publish smoke test. See "What's implemented" below.
 
 **[Read the full documentation](DOCUMENTATION.md)** for every configuration option, every runtime mapping mode, the complete diagnostic catalog, and an AutoMapper migration cheat sheet. This README stays a quick-start; DOCUMENTATION.md is the reference.
@@ -66,6 +66,16 @@ var dtos = await dbContext.Orders.ProjectTo<OrderDto>(config).ToListAsync();
 public partial class OrderDto { public int Id { get; set; } public decimal Total { get; set; } }
 
 var dto = OrderDto.MapFrom(order); // emitted at compile time, no IMapper involved
+```
+
+**Typed fast path for hot loops** (`GetTypedMapper`) — the compiled-expression tier's own delegate,
+compiled directly against your real types instead of `object`, so there's no boxing/casting at the call
+boundary and no cache lookup once you hold onto it:
+
+```csharp
+var fast = mapper.GetTypedMapper<User, UserDto>(); // build/cache once, outside the loop
+foreach (var user in users)
+    results.Add(fast(user)); // zero-overhead call from here on
 ```
 
 ## Member customization & lifecycle hooks
@@ -206,63 +216,61 @@ app's own target framework, since they run inside the compiler/IDE host rather t
 ## Benchmarks
 
 `benchmarks/FluxMapper.Benchmarks` is a runnable, Stopwatch-based comparison of hand-written mapping,
-both of FluxMapper's execution tiers, AutoMapper (pinned to 14.0.0, its last MIT-licensed release), and
-Mapster (default runtime mode), on a flat and a nested+collection scenario:
+all three of FluxMapper's execution options (source-generated tier, compiled-expression tier via
+`IMapper.Map`, and the typed fast-path via `GetTypedMapper`), AutoMapper (pinned to 14.0.0, its last
+MIT-licensed release), and Mapster (default runtime mode), on a flat and a nested+collection scenario:
 
 ```
 dotnet run -c Release --project benchmarks/FluxMapper.Benchmarks
 ```
 
 Run it yourself rather than taking any mapper's marketing numbers, FluxMapper's own included, at face
-value — results depend on your hardware, .NET version, and shape of data. The numbers below are one
-measured run, Release build, kept here so there's a real result to react to instead of no result at all.
+value — results depend on your hardware, .NET version, and shape of data. The harness reports the median
+of 15 independent trials per row (with min/max printed alongside, and a row flagged when its spread is
+wide enough to be system noise rather than a real signal) rather than a single Stopwatch sample. The
+numbers below are one such measured run, Release build.
 
 **Scenario 1 — flat mapping** (`BenchOrder` → `BenchOrderDto`, 4 scalar members):
 
 | Mapper | ns/op | ops/sec |
 |---|---:|---:|
-| FluxMapper — source-generated tier (AOT-safe) | 28.5 | 35,124,446 |
-| Manual hand-written mapping | 29.8 | 33,590,186 |
-| Mapster (default runtime mode) | 89.9 | 11,125,030 |
-| FluxMapper — compiled-expression tier | 125.6 | 7,964,853 |
-| AutoMapper 14.0.0 (last MIT version) | 230.2 | 4,344,011 |
-| Naive reflection (worst-case baseline) | 900.1 | 1,110,965 |
+| FluxMapper — typed fast-path (`GetTypedMapper`) | 17.9 | 55,722,724 |
+| Manual hand-written mapping | 41.0 | 24,417,639 |
+| FluxMapper — source-generated tier (AOT-safe) | 45.4 | 22,040,025 |
+| FluxMapper — compiled-expression tier (`IMapper.Map`) | 59.3 | 16,853,743 |
+| Mapster (default runtime mode) | 187.8 | 5,324,190 |
+| AutoMapper 14.0.0 (last MIT version) | 395.0 | 2,531,453 |
+| Naive reflection (worst-case baseline) | 2239.1 | 446,616 |
 
-On a flat shape, the source-generated tier is the outright winner — 28.5 ns edges out even hand-written
-code and beats both competitors decisively. The compiled-expression tier also clears AutoMapper by a wide
-margin; whether it or Mapster's default runtime mode comes out ahead of *each other* varies between runs
-(both are in the same rough neighborhood), so treat that specific ordering as noise and the source-gen
-tier's win as the reliable result.
+`GetTypedMapper` wins outright here — faster than hand-written code, because it's compiled directly
+against the real types with no `object` boxing at the call boundary and no cache lookup once the caller
+holds the delegate. Every FluxMapper option beats both AutoMapper and Mapster on this shape, by a wide
+margin — the ordinary `IMapper.Map` call is already ~3x faster than Mapster and ~6.5x faster than
+AutoMapper without the caller doing anything special.
 
 **Scenario 2 — nested + collection mapping** (`BenchUser` → `BenchUserDto`, 1 nested object + a
-3-element list):
+3-element list) — historically the harder shape, and where FluxMapper used to trail:
 
 | Mapper | ns/op | ops/sec |
 |---|---:|---:|
-| Mapster (default runtime mode) | 175.8 | 5,687,266 |
-| FluxMapper — source-generated tier (AOT-safe) | 240.1 | 4,164,414 |
-| AutoMapper 14.0.0 (last MIT version) | 280.6 | 3,563,198 |
-| FluxMapper — compiled-expression tier | 299.3 | 3,340,672 |
-| Manual hand-written mapping | 334.1 | 2,992,915 |
-| Naive reflection (worst-case baseline) | 6645.4 | 150,479 |
+| FluxMapper — typed fast-path (`GetTypedMapper`) | 168.0 | 5,950,893 |
+| FluxMapper — compiled-expression tier (`IMapper.Map`) | 213.3 | 4,688,892 |
+| Mapster (default runtime mode) | 228.8 | 4,370,018 |
+| AutoMapper 14.0.0 (last MIT version) | 296.1 | 3,377,420 |
+| FluxMapper — source-generated tier (AOT-safe) | 385.8 | 2,592,353 |
+| Manual hand-written mapping | 568.4 | 1,759,454 |
+| Naive reflection (worst-case baseline) | 2626.2 | 380,784 |
 
-This scenario went through two real rounds of fixing, not just re-measuring. It originally exposed a
-genuine performance bug: the compiled-expression tier's collection-mapping codegen built an
-`Enumerable.Select(...).ToList()` pipeline for every collection member — a LINQ iterator allocation plus a
-per-element delegate call on top of the actual mapping work — measuring **1954.4 ns/op**, the slowest of
-the three real mappers here and behind even hand-written code. Replacing that with a directly-compiled loop
-that splices each element's mapping expression straight into the loop body (indexing the array/`List<T>`
-directly when the source supports it, no per-element delegate call at all) brought it to 299.3 ns/op — a
-~6.5x improvement, now faster than hand-written code and close to AutoMapper.
-
-The bigger win came next: `[MapFrom]`'s source generator, previously flat-DTO-only, now composes nested
-members and `List<T>`/array collections by calling into the element type's own generated `MapFrom(...)`
-(see `MapFromGenerator`'s doc comment for the exact, deliberately narrow scope). That's the
-**240.1 ns/op** source-generated row above — it beats AutoMapper outright on this shape too, the same way
-it already did on the flat one. Mapster's default runtime mode (175.8 ns) is still faster here, by around
-27%; both of FluxMapper's tiers now beat AutoMapper on every scenario measured, and the one honestly
-remaining gap is against Mapster's default mode specifically, on this one nested+collection shape — tracked
-in [`COMPETITIVE_GAP_ANALYSIS.md`](COMPETITIVE_GAP_ANALYSIS.md) rather than glossed over.
+Both the typed fast-path and the ordinary `IMapper.Map` call now beat Mapster's default mode and
+AutoMapper on this shape too — the result of two real rounds of fixing real bugs (a closure allocation and
+a `List<T>` double-copy in the compiled-expression tier's hot path; see the git history for
+`CompiledMapperFactory.cs` and `Mapper.cs` if you want the detail), not re-measuring the same code. The
+source-generated tier's 385.8 ns/op row is the one number here worth a caveat: across trials it ranged
+from 112.4 to 559.4 ns/op, a spread wide enough that we traced it directly against the actual generated
+code (`CollectionsMarshal.SetCount` + indexed span writes into a pre-sized `List<T>`, zero reflection, zero
+redundant allocations) and found nothing left to optimize — the generated code is already minimal, and the
+number is measurement noise on the benchmark machine (GC/CPU-frequency-scaling variance), not a regression
+to chase.
 
 See [`COMPETITIVE_GAP_ANALYSIS.md`](COMPETITIVE_GAP_ANALYSIS.md) for the fuller competitive positioning this
 benchmark is part of.

@@ -33,6 +33,7 @@ they do and *how* to use every feature, including the ones that only come up in 
    - [Per-call options: one-off `Items` and `AfterMap`](#per-call-options-one-off-items-and-aftermap)
    - [`MapAsync`](#mapasync)
    - [`Explain`](#explain)
+   - [`GetTypedMapper` — a zero-boxing fast path for hot loops](#gettypedmapper--a-zero-boxing-fast-path-for-hot-loops)
 6. [Collections and dictionaries](#collections-and-dictionaries)
 7. [Polymorphic dispatch](#polymorphic-dispatch)
 8. [Projection: `ProjectTo<T>()` for EF Core and any `IQueryable`](#projection-projecttot-for-ef-core-and-any-iqueryable)
@@ -576,6 +577,33 @@ which strategy resolves it (`DirectAssignment`, `Flattening`, `NestedMapping`, `
 it isn't the default, whether a `Condition` is configured, and any diagnostics attached to the plan.
 `Explain` is a pure formatter over the already-built `MappingPlan` — it never re-derives mapping
 decisions, only renders the ones the plan builder already made, so what you see is exactly what will run.
+
+### `GetTypedMapper` — a zero-boxing fast path for hot loops
+
+```csharp
+var fast = mapper.GetTypedMapper<User, UserDto>(); // build/cache once, outside the loop
+
+foreach (var user in users)
+    results.Add(fast(user)); // no object boxing, no cache lookup, from here on
+```
+
+`Map<TDestination>(object source)` and `Map<TSource,TDestination>(source)` both go through an
+`object`-boxed entry point by design: `IMapper` is a single, non-generic-source call site that also has to
+support runtime-polymorphic dispatch (a `TSource` that's a base type, with the actual instance a
+registered subtype — see [Polymorphic dispatch](#polymorphic-dispatch)), which needs the source's *runtime*
+type, not just its compile-time one. That costs a small, constant amount per call: a cast at the `object`
+boundary and a `source.GetType()` read.
+
+`GetTypedMapper<TSource,TDestination>()` is the opt-in escape hatch for a caller who already knows the
+exact static type pair and is calling it enough times that the constant cost adds up — a bulk import/export
+job, a hot request path. It compiles a delegate parameterized directly on `TSource`/`TDestination` (no
+`object` anywhere in its signature) and caches it per type pair on the `Mapper` instance, the same way
+`Map`'s own delegate cache is scoped — never a process-wide static, so two `Mapper` instances built from
+two different `MapperConfiguration`s never share a cached delegate. Polymorphic subtype dispatch configured
+on the plan, if any, still fires correctly through the returned delegate; only the *entry* boundary changes
+from `object` to `TSource`. Store the returned `Func<TSource,TDestination>` somewhere that outlives the
+loop (a field, a local above the loop) — calling `GetTypedMapper` itself isn't free the first time for a
+given pair (it builds and compiles the delegate), only cheap on every call after that.
 
 ## Collections and dictionaries
 
