@@ -16,7 +16,7 @@
     Shared packaging metadata for every packable project's `dotnet pack`.
   -->
   <PropertyGroup>
-    <Version>1.2.0</Version>
+    <Version>1.3.0</Version>
     <RepositoryUrl>https://github.com/Osama94/FluxMapper</RepositoryUrl>
     <PackageTags>mapping;object-mapper;automapper;dto;source-generator;aot</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
